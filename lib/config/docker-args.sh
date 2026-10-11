@@ -139,6 +139,7 @@ build_common_docker_args() {
         --group-add coder
         --security-opt no-new-privileges:true
         --cap-drop=ALL
+        --label "pi-dockerized=1"
         -e "TERM=${TERM:-xterm-256color}"
     )
 
@@ -169,6 +170,14 @@ build_common_docker_args() {
     # Security policy mode consumed by the baked security-guard extension
     # (strict | balanced | off). Defaults to balanced when unset.
     DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_POLICY=$SECURITY_POLICY")
+
+    # Strict mode refuses tools outside the built-in set unless listed here.
+    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_ALLOWED_TOOLS=$ALLOWED_TOOLS")
+
+    # Where the guard finds the optional host allow rules and writes its audit
+    # log (both mounted by build_standard_volume_args when present).
+    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_ALLOW_FILE=$PI_AGENT_CONTAINER_DIR/allow.json")
+    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_AUDIT_FILE=$PI_AGENT_CONTAINER_DIR/audit.log")
 }
 
 # Build standard volume mount arguments for Pi directories.
@@ -191,7 +200,9 @@ build_standard_volume_args() {
 
     # Project directory (read-write) — mounted at the computed path.
     # Skipped when no project is given (e.g. auth) or when it resolves to $HOME.
+    # Stripping $HOME can land on a system path (~/etc -> /etc): refuse those.
     if [ -n "$project_dir" ] && [ -n "$CONTAINER_WORKDIR" ]; then
+        validate_container_path "$CONTAINER_WORKDIR" "the project" || return 1
         VOLUME_ARGS+=(-v "$project_dir:$CONTAINER_WORKDIR")
         build_git_worktree_args "$project_dir"
     fi
@@ -227,9 +238,32 @@ build_standard_volume_args() {
         fi
     done
 
+    # Guard audit log (read-write): one JSON line per blocked call.
+    if [ -f "$agent/audit.log" ]; then
+        VOLUME_ARGS+=(-v "$agent/audit.log:$PI_AGENT_CONTAINER_DIR/audit.log:rw")
+    fi
+
+    # Host-managed extra allow rules for the guard (read-only: the session can
+    # never widen its own allowlist). Skipped for --untrusted sessions.
+    if [ -f "$agent/allow.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then
+        local av=0
+        json_valid "$agent/allow.json" || av=$?
+        if [ "$av" -eq 1 ]; then
+            config_error "$agent/allow.json is not valid JSON; fix it or remove it."
+            return 1
+        fi
+        VOLUME_ARGS+=(-v "$agent/allow.json:$PI_AGENT_CONTAINER_DIR/allow.json:ro")
+    fi
+
     # npm cache (read-write): persisted so npx-based MCP servers do not re-download.
     if [ -d "$PI_HOME/.npm" ]; then
         VOLUME_ARGS+=(-v "$PI_HOME/.npm:/home/coder/.npm:rw")
+    fi
+
+    # qmd keeps its index and downloaded models under ~/.cache/qmd; the
+    # container is ephemeral (--rm), so persist them on the host.
+    if [ -d "$PI_HOME/.cache/qmd" ]; then
+        VOLUME_ARGS+=(-v "$PI_HOME/.cache/qmd:/home/coder/.cache/qmd:rw")
     fi
 
     # Claude Code compatibility directory (optional): fallback CLAUDE.md rules

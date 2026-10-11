@@ -12,7 +12,25 @@ ensure_pi_dirs() {
     mkdir -p "$PI_HOME/.pi/agent/skills" 2>/dev/null || true
     mkdir -p "$PI_HOME/.pi/agent/sessions" 2>/dev/null || true
     mkdir -p "$PI_HOME/.npm" 2>/dev/null || true
+    mkdir -p "$PI_HOME/.cache/qmd" 2>/dev/null || true
     ensure_pi_state
+    harden_state_permissions
+}
+
+# The state tree holds sessions, OAuth tokens and the audit log: keep it private
+# to the user. Only directories and files this user owns are touched.
+harden_state_permissions() {
+    local agent="$PI_HOME/.pi/agent" dir file
+    for dir in "$CONFIG_DIR" "$PI_HOME" "$PI_HOME/.pi" "$agent" "$agent/sessions"; do
+        if [ -d "$dir" ] && [ -O "$dir" ]; then
+            chmod 700 "$dir" 2>/dev/null || true
+        fi
+    done
+    for file in auth.json mcp-auth.json trust.json mcp.log audit.log; do
+        if [ -f "$agent/$file" ] && [ -O "$agent/$file" ]; then
+            chmod 600 "$agent/$file" 2>/dev/null || true
+        fi
+    done
 }
 
 # Seed/repair the host-side Pi state that is bind-mounted into the container.
@@ -40,6 +58,9 @@ ensure_pi_state() {
         fi
     done
     [ -f "$agent/mcp.log" ] || : >"$agent/mcp.log" 2>/dev/null || true
+    # Blocked tool calls, one JSON line each (written by the guard; see
+    # `pi-dockerized audit`). A review aid: the session can write it.
+    [ -f "$agent/audit.log" ] || : >"$agent/audit.log" 2>/dev/null || true
 }
 
 # Check whether a file parses as JSON. Tries node, then python3; without either
@@ -175,7 +196,7 @@ check_pi_state() {
 
     # The writable state Pi needs; missing entries are (re)seeded on sync.
     local name
-    for name in skills sessions auth.json mcp-auth.json trust.json mcp.log; do
+    for name in skills sessions auth.json mcp-auth.json trust.json mcp.log audit.log; do
         if [ -e "$agent/$name" ]; then
             config_success "$name present (in sync)"
         else
@@ -183,6 +204,29 @@ check_pi_state() {
             stale=true
         fi
     done
+
+    # The optional host allow rules must parse: the guard would otherwise warn
+    # and ignore them, and the wrapper refuses to start with a broken file.
+    if [ -f "$agent/allow.json" ]; then
+        local av=0
+        json_valid "$agent/allow.json" || av=$?
+        if [ "$av" -eq 1 ]; then
+            config_warning "allow.json is not valid JSON (fix it; sessions will refuse to start)"
+            stale=true
+        else
+            config_success "allow.json present"
+        fi
+    fi
+
+    # Sessions and tokens live here: group/other access defeats the isolation.
+    if [ -d "$PI_HOME" ] && [ -O "$PI_HOME" ]; then
+        local perm
+        perm=$(stat -c '%a' "$PI_HOME" 2>/dev/null || stat -f '%Lp' "$PI_HOME" 2>/dev/null || true)
+        if [ -n "$perm" ] && [ $((8#$perm & 8#077)) -ne 0 ]; then
+            config_warning "$PI_HOME is accessible to group/others ($perm); sync restores 700"
+            stale=true
+        fi
+    fi
 
     # The secrets file is never read for values here; only its permissions.
     if [ -n "${ENV_FILE:-}" ]; then

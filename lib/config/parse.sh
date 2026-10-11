@@ -8,20 +8,78 @@
 # CONFIG PARSING (used at runtime by all scripts)
 # ============================================
 
-# Parse config file into global arrays
+# Parse the config file into the global settings, once per process: commands
+# that call it twice (a caller and run_cli_command) would otherwise repeat every
+# config warning. `parse_config --reload` forces a re-read after an edit.
+_CONFIG_LOADED=false
 parse_config() {
+    if [ "${1:-}" != "--reload" ] && [ "$_CONFIG_LOADED" = true ]; then
+        return 0
+    fi
+    _CONFIG_LOADED=true
     load_config || return 0 # Continue even if load fails
 }
 
-# Add a bind mount for a socket/file. Docker's `--mount` spec separates fields
-# with commas, so fall back to `-v` when a path contains one.
-# Usage: mount_bind <source> <target>
+# Add a bind mount for a host path. `--mount` fails loudly when the source is
+# missing, whereas `-v` would make Docker create a root-owned directory on the
+# host. `--mount` fields are comma separated, so fall back to `-v` (sources are
+# checked to exist beforehand) when a path contains a comma.
+# Usage: mount_bind <source> <target> [ro]
 mount_bind() {
-    local src="$1" dst="$2"
+    local src="$1" dst="$2" mode="${3:-}"
     case "$src$dst" in
-        *,*) DOCKER_MOUNT_ARGS+=(-v "$src:$dst") ;;
-        *) DOCKER_MOUNT_ARGS+=(--mount "type=bind,source=$src,target=$dst") ;;
+    *,*) DOCKER_MOUNT_ARGS+=(-v "$src:$dst${mode:+:$mode}") ;;
+    *) DOCKER_MOUNT_ARGS+=(--mount "type=bind,source=$src,target=$dst${mode:+,readonly}") ;;
     esac
+}
+
+# Turn one config mount entry into docker args. Validates the host source
+# (never home, credentials, the wrapper's config or the Docker socket) and the
+# container target (never over system paths or the baked tooling). A missing
+# source is skipped with a warning instead of letting Docker create it.
+# Usage: add_custom_mount <name> <entry>
+add_custom_mount() {
+    local name="$1" mount="$2"
+    # Expand a leading ~ to the home directory (only at the start of the host
+    # path; ':' inside paths is the field separator and unsupported)
+    if [[ "$mount" == "~"* ]]; then
+        mount="$HOME${mount#"~"}"
+    fi
+
+    # A mount entry must be host_path:container_path[:mode].
+    if [[ "$mount" != *:* ]]; then
+        config_error "Invalid mount '$mount': expected host_path:container_path"
+        exit 1
+    fi
+
+    local host_path="${mount%%:*}"
+    local rest="${mount#*:}"
+    local container_path="${rest%:*}"
+    local mode="${rest##*:}"
+
+    # A malformed entry must not reach docker as `-v host::mode`.
+    if [ -z "$container_path" ] || [[ "$container_path" != /* ]]; then
+        config_error "Invalid mount '$mount': container path must be absolute"
+        exit 1
+    fi
+
+    validate_mount_source "$host_path" "mount.$name" || exit 1
+    validate_container_path "$container_path" "mount.$name" internal || exit 1
+
+    if [ ! -e "$host_path" ]; then
+        config_warning "Skipping mount.$name: $host_path does not exist"
+        return 0
+    fi
+
+    # No mode defaults to read-only; ro/rw use --mount; anything else (e.g.
+    # SELinux labels) is passed to -v as given.
+    if [ "$mode" = "$container_path" ] || [ "$mode" = "ro" ]; then
+        mount_bind "$host_path" "$container_path" ro
+    elif [ "$mode" = "rw" ]; then
+        mount_bind "$host_path" "$container_path"
+    else
+        DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:$mode")
+    fi
 }
 
 # Build docker volume mount arguments from CUSTOM_MOUNTS array (plus SSH/GPG
@@ -41,57 +99,9 @@ build_mount_args() {
     ensure_gpg_agent_ready
     cleanup_stale_relays
 
-    for mount in "${CUSTOM_MOUNTS[@]}"; do
-        # Expand a leading ~ to the home directory (only at the start of the
-        # host path; ':' inside paths is the field separator and unsupported)
-        if [[ "$mount" == "~"* ]]; then
-            mount="$HOME${mount#"~"}"
-        fi
-
-        # Extract host_path, container_path, and mode
-        local host_path="${mount%%:*}"
-        local rest="${mount#*:}"
-        local container_path="${rest%:*}"
-        local mode="${rest##*:}"
-
-        # A mount entry must be host_path:container_path[:mode].
-        if [[ "$mount" != *:* ]]; then
-            config_error "Invalid mount '$mount': expected host_path:container_path"
-            exit 1
-        fi
-
-        # Never expose the host SSH private material: agent forwarding is the
-        # supported path (config/known_hosts are mounted read-only automatically).
-        if [ "$host_path" = "$HOME/.ssh" ] || [[ "$host_path" == "$HOME/.ssh/"* ]]; then
-            config_error "Refusing to mount $host_path: it would expose SSH private keys."
-            config_info "Use setting.ssh_agent_support=true instead (config/known_hosts are mounted read-only automatically)."
-            exit 1
-        fi
-
-        # Never expose the host GnuPG private material either: agent forwarding
-        # mirrors only the public keyring and forwards the agent socket.
-        if [ "$host_path" = "$HOME/.gnupg" ] || [[ "$host_path" == "$HOME/.gnupg/"* ]]; then
-            config_error "Refusing to mount $host_path: it would expose GnuPG private keys."
-            config_info "Use setting.gpg_agent_support=true instead (only the public keyring and the agent socket are shared)."
-            exit 1
-        fi
-
-        # A malformed entry must not reach docker as `-v host::mode`.
-        if [ -z "$container_path" ] || [[ "$container_path" != /* ]]; then
-            config_error "Invalid mount '$mount': container path must be absolute"
-            exit 1
-        fi
-
-        # Validate mode is either not set or "rw"
-        if [ "$mode" = "$container_path" ]; then
-            # No mode specified, default to read-only
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:ro")
-        elif [ "$mode" = "rw" ]; then
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:rw")
-        else
-            # Mode was specified, use it as-is
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:$mode")
-        fi
+    local i
+    for i in "${!CUSTOM_MOUNTS[@]}"; do
+        add_custom_mount "${CUSTOM_MOUNT_KEYS[$i]:-custom$i}" "${CUSTOM_MOUNTS[$i]}"
     done
 
     # Handle SSH agent forwarding if enabled. ensure_ssh_agent_ready has already

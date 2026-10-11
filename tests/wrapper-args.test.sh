@@ -82,8 +82,8 @@ assert_contains "$vols" "$AGENT/skills:/home/coder/.pi/agent/skills:ro" "skills 
 assert_contains "$vols" "$AGENT/sessions:/home/coder/.pi/agent/sessions:rw" "sessions must be mounted read-write"
 assert_contains "$vols" "$AGENT/auth.json:/home/coder/.pi/agent/auth.json:rw" "auth.json must be mounted read-write"
 assert_contains "$vols" "$AGENT/mcp-auth.json:/home/coder/.pi/agent/mcp-auth.json:rw" "mcp-auth.json must be mounted read-write"
-assert_contains "$vols" "$HOME/.claude:/home/coder/.claude:ro" "~/.claude must be mounted read-only"
-assert_contains "$vols" "$HOME/.agents:/home/coder/.agents:ro" "~/.agents must be mounted read-only"
+assert_contains "$vols" "$HOME/.claude:/home/coder/.claude:ro" "the .claude directory must be mounted read-only"
+assert_contains "$vols" "$HOME/.agents:/home/coder/.agents:ro" "the .agents directory must be mounted read-only"
 assert_not_contains "$vols" "/var/run/docker.sock" "docker socket must not be mounted by default"
 
 # --- Common docker args ------------------------------------------------------
@@ -131,7 +131,7 @@ CUSTOM_MOUNTS=("$HOME/.gitconfig:/home/coder/.gitconfig")
 : >"$HOME/.gitconfig"
 build_mount_args
 mnt=" ${DOCKER_MOUNT_ARGS[*]} "
-assert_contains "$mnt" "$HOME/.gitconfig:/home/coder/.gitconfig:ro" "custom mounts default to read-only"
+assert_contains "$mnt" "type=bind,source=$HOME/.gitconfig,target=/home/coder/.gitconfig,readonly" "custom mounts default to read-only"
 CUSTOM_MOUNTS=()
 
 # --- Config file round-trip -------------------------------------------------

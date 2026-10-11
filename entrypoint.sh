@@ -23,7 +23,8 @@ export USER=coder
 # Kept explicit here so it holds even if the image PATH changes.
 export PATH="/home/coder/.local/bin:$PATH"
 
-# Source NVM to make Node.js available
+# Node.js is on PATH through the image's $NVM_DIR/default symlink; NVM itself is
+# only sourced below when that is not the case.
 export NVM_DIR="/home/coder/.nvm"
 
 # Pi reads its agent directory from this variable (set by the image; re-assert
@@ -39,8 +40,24 @@ if [ -n "${GNUPGHOME:-}" ] && command -v gpgconf >/dev/null 2>&1; then
     gpgconf --launch keyboxd >/dev/null 2>&1 || true
 fi
 
+# Fail closed: refuse to start when the security guard is damaged (missing or
+# empty pattern files, a canary call judged wrongly). The baked diagnostics
+# skip it so `pi-dockerized doctor` can still run and report what is wrong.
+GUARD_DIR="${PI_CODING_AGENT_DIR}/extensions/pi-security-guard"
+case "${1:-}" in
+/usr/local/lib/pi-dockerized/*) ;;
+*)
+    if ! node "$GUARD_DIR/selftest.mjs"; then
+        echo "pi-dockerized: the security guard failed its self-test; refusing to start." >&2
+        echo "Rebuild the image ('pi-dockerized build') and run 'pi-dockerized doctor'." >&2
+        exit 1
+    fi
+    ;;
+esac
+
 # cd into the project working directory before executing. The script is single
 # quoted so $WORKDIR is expanded by the child bash from the environment, not
-# spliced into the command text.
-exec bash -c 'source "$NVM_DIR/nvm.sh" && cd "$WORKDIR" && exec "$@"' \
+# spliced into the command text. NVM is sourced only when node is not already
+# on PATH (it is slow to load, and normally unnecessary).
+exec bash -c 'command -v node >/dev/null 2>&1 || source "$NVM_DIR/nvm.sh"; cd "$WORKDIR" && exec "$@"' \
     -- "$@"

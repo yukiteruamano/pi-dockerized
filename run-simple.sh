@@ -2,6 +2,8 @@
 
 # Alternative simple runner for Pi Docker.
 # Delegates to bin/pi-dockerized so there is a single code path.
+# DEPRECATED: `pi-dockerized run` does the same; this script will be removed
+# in v1.0.
 
 set -e
 
@@ -18,6 +20,8 @@ if [ "$(id -u)" -eq 0 ]; then
     config_error "Do not run this script as root."
     exit 1
 fi
+
+echo "run-simple.sh is deprecated and will be removed in v1.0; use 'pi-dockerized run'" >&2
 
 # Show help if requested
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "help" ]; then
@@ -54,7 +58,7 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 # Build the image if it doesn't exist (the main runner expects it to exist)
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     config_info "Docker image not found, building..."
-    docker build -t "$IMAGE_NAME" "$ROOT"
+    "$ROOT/bin/pi-dockerized" build || exit 1
 fi
 
 # Single code path: hand off to the main runner

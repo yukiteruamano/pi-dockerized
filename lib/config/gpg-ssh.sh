@@ -39,7 +39,8 @@ resolve_gpg_agent_extra_socket() {
 # presence alone is not enough: a stale socket file would pass for "running",
 # so on a real host the agent is probed with gpg-connect-agent (2s timeout).
 # Test seams:
-#   - GPG_AGENT_PROBE_CMD replaces the probe with an arbitrary command.
+#   - GPG_AGENT_PROBE_CMD replaces the probe with an arbitrary command (only
+#     honored with PI_DOCKERIZED_TEST=1, see test_seam).
 #   - GPG_AGENT_SOCKET / GPG_AGENT_EXTRA_SOCKET (plain test sockets, not real
 #     agents) skip the probe and trust the socket.
 # Usage: gpg_agent_is_running
@@ -52,8 +53,9 @@ gpg_agent_is_running() {
         return 1
     fi
 
-    if [ -n "${GPG_AGENT_PROBE_CMD:-}" ]; then
-        bash -c "$GPG_AGENT_PROBE_CMD" >/dev/null 2>&1 && return 0
+    local probe_cmd; probe_cmd=$(test_seam GPG_AGENT_PROBE_CMD)
+    if [ -n "$probe_cmd" ]; then
+        bash -c "$probe_cmd" >/dev/null 2>&1 && return 0
         return 1
     fi
 
@@ -120,8 +122,9 @@ ensure_gpg_agent_ready() {
     done
 
     config_info "Starting host gpg-agent for GnuPG forwarding..."
-    if [ -n "${GPG_AGENT_LAUNCH_CMD:-}" ]; then
-        bash -c "$GPG_AGENT_LAUNCH_CMD" >/dev/null 2>&1 || true
+    local launch_cmd; launch_cmd=$(test_seam GPG_AGENT_LAUNCH_CMD)
+    if [ -n "$launch_cmd" ]; then
+        bash -c "$launch_cmd" >/dev/null 2>&1 || true
     else
         gpgconf --launch gpg-agent >/dev/null 2>&1 || config_warning "gpgconf --launch gpg-agent failed"
     fi
@@ -286,6 +289,7 @@ cleanup_stale_relays() {
 # Relay a GnuPG agent socket through a socket on a normal filesystem so Docker
 # can bind it. One process per session; the wrapper stops it when the container
 # exits. Uses `socat` by default; GPG_RELAY_CMD overrides the command for tests
+# (only with PI_DOCKERIZED_TEST=1; see test_seam)
 # (it receives RELAY_SOCK and RELAY_REAL in its environment).
 # Usage: relay_socket=$(start_gpg_relay <real_socket>)
 start_gpg_relay() {
@@ -293,7 +297,7 @@ start_gpg_relay() {
     [ -n "$real" ] && [ -S "$real" ] || return 1
     relay_dir_ok || return 1
 
-    local template="${GPG_RELAY_CMD:-}"
+    local template; template=$(test_seam GPG_RELAY_CMD)
     if [ -z "$template" ]; then
         command -v socat >/dev/null 2>&1 || return 1
         # Single quotes are intentional: expanded later via RELAY_SOCK/RELAY_REAL env.

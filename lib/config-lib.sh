@@ -13,7 +13,7 @@
 _CONFIG_LIB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/config"
 
 # core first: it defines the constants and logging the other modules rely on.
-for _config_module in core state gpg-ssh docker-args settings parse prompts; do
+for _config_module in core mount-policy state gpg-ssh docker-args settings parse overrides prompts; do
     # shellcheck source=/dev/null
     source "$_CONFIG_LIB_DIR/$_config_module.sh"
 done

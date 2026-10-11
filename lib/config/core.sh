@@ -2,13 +2,28 @@
 
 # core.sh - constants, colors, logging, config globals and generic helpers.
 # Sourced by lib/config-lib.sh (not executable directly).
+# shellcheck disable=SC2034 # globals are defined here and consumed by the other sourced modules
 # NOTE: no "set -e" — library file; callers control their own error handling.
 
 # ============================================
 # CONSTANTS
 # ============================================
 
-CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/pi-dockerized}"
+# Root of every wrapper config tree. The default profile lives directly in it;
+# a named profile (--profile NAME / PI_DOCKERIZED_PROFILE) lives in
+# profiles/NAME with its own config, secrets file, MCP servers and state, so
+# keys, policies and sessions never mix between contexts.
+PI_CONFIG_ROOT="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
+PI_PROFILE="${PI_DOCKERIZED_PROFILE:-}"
+if [ -n "$PI_PROFILE" ] && ! [[ "$PI_PROFILE" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+    echo "pi-dockerized: invalid profile '$PI_PROFILE' (use a-z, 0-9, - or _)" >&2
+    PI_PROFILE=""
+fi
+if [ -n "$PI_PROFILE" ]; then
+    CONFIG_DIR="${CONFIG_DIR:-$PI_CONFIG_ROOT/profiles/$PI_PROFILE}"
+else
+    CONFIG_DIR="${CONFIG_DIR:-$PI_CONFIG_ROOT}"
+fi
 CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config}"
 
 # Self-contained Pi state tree. The wrapper owns all of Pi's runtime state under
@@ -43,11 +58,11 @@ PI_BIN_PATH_LINE='export PATH="$HOME/.local/share/pi-dockerized/bin:$PATH"'
 # COLOR DEFINITIONS (with defaults if not set)
 # ============================================
 
-: "${RED:='\033[0;31m'}"
-: "${GREEN:='\033[0;32m'}"
-: "${YELLOW:='\033[1;33m'}"
-: "${BLUE:='\033[0;34m'}"
-: "${NC:='\033[0m'}"
+RED="${RED:-\\033[0;31m}"
+GREEN="${GREEN:-\\033[0;32m}"
+YELLOW="${YELLOW:-\\033[1;33m}"
+BLUE="${BLUE:-\\033[0;34m}"
+NC="${NC:-\\033[0m}"
 
 # Honor NO_COLOR (https://no-color.org) and dumb terminals: strip ANSI codes.
 # Applied here so every script sourcing this library (wrapper, setup,
@@ -61,40 +76,27 @@ if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ]; then
 fi
 
 # ============================================
-# LOGGING FUNCTIONS (use caller's style if available)
+# LOGGING FUNCTIONS
 # ============================================
 
-config_info() {
-    if type print_info >/dev/null 2>&1; then
-        print_info "$1"
-    else
-        echo -e "${BLUE}ℹ${NC} $1"
-    fi
+# Print arguments with control characters stripped (ESC, CR, ...): values that
+# come from paths, config files or the environment must not be able to inject
+# terminal escape sequences. Tab and newline are kept.
+safe_text() {
+    printf '%s' "$1" | tr -d '\000-\010\013-\037\177'
 }
 
-config_success() {
-    if type print_success >/dev/null 2>&1; then
-        print_success "$1"
-    else
-        echo -e "${GREEN}✓${NC} $1"
-    fi
-}
+# Info and success go to stdout; warnings and errors to stderr, so command
+# output (exec, config get, audit) stays clean when piped.
+print_info() { printf '%b%s%b %s\n' "$BLUE" "ℹ" "$NC" "$(safe_text "$1")"; }
+print_success() { printf '%b%s%b %s\n' "$GREEN" "✓" "$NC" "$(safe_text "$1")"; }
+print_warning() { printf '%b%s%b %s\n' "$YELLOW" "⚠" "$NC" "$(safe_text "$1")" >&2; }
+print_error() { printf '%b%s%b %s\n' "$RED" "✗" "$NC" "$(safe_text "$1")" >&2; }
 
-config_warning() {
-    if type print_warning >/dev/null 2>&1; then
-        print_warning "$1"
-    else
-        echo -e "${YELLOW}⚠${NC} $1"
-    fi
-}
-
-config_error() {
-    if type print_error >/dev/null 2>&1; then
-        print_error "$1"
-    else
-        echo -e "${RED}✗${NC} $1"
-    fi
-}
+config_info() { print_info "$1"; }
+config_success() { print_success "$1"; }
+config_warning() { print_warning "$1"; }
+config_error() { print_error "$1"; }
 
 # Resolve an editor: $EDITOR first, then common fallbacks.
 # Prints the editor command name, or nothing when none is available.
@@ -141,6 +143,11 @@ ENV_FILE=""                     # Optional dotenv file with secrets (docker --en
 THEME=""                        # Optional Pi theme name (built-in, e.g. system); empty = Pi default
 MODEL=""                        # Optional Pi model selection (--model), empty = Pi default
 GPG_SOCKET=""                   # Resolved host agent socket (set by build_mount_args)
+ALLOWED_TOOLS=""                # Comma list of tools strict mode lets through besides the built-in ones
+VERIFY_UPDATES=false            # Require a verified (signed) upstream commit before `update` pulls
+SESSION_POLICY=""               # Per-invocation override of SECURITY_POLICY (run/shell/exec flags)
+SESSION_NETWORK=""              # Per-invocation override of NETWORK
+SESSION_UNTRUSTED=false         # --untrusted: strict policy, bridge network, no forwarding, no extra mounts
 
 # ============================================
 # SHARED HELPERS
@@ -195,6 +202,36 @@ validate_project_dir() {
     esac
 
     return 0
+}
+
+# Test-only hooks: variables that make the wrapper run an arbitrary command
+# (agent probe/launch, relay) are honored only with PI_DOCKERIZED_TEST=1, so a
+# polluted environment cannot turn them into code execution.
+# Usage: cmd=$(test_seam GPG_RELAY_CMD)
+test_seam() {
+    if [ "${PI_DOCKERIZED_TEST:-}" = 1 ]; then
+        printf '%s' "${!1:-}"
+    fi
+    return 0
+}
+
+# Resolve a path to its canonical form without requiring it to exist (symlinks
+# followed). Falls back to the literal path where `readlink -m` is unavailable.
+# Usage: real=$(canonical_path "$path")
+canonical_path() {
+    local out
+    if out=$(readlink -m -- "$1" 2>/dev/null) && [ -n "$out" ]; then
+        printf '%s' "$out"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# True when CHILD equals PARENT or lies inside it (both absolute, no trailing /).
+# Usage: path_within <child> <parent>
+path_within() {
+    local child="${1%/}" parent="${2%/}"
+    [ "$child" = "$parent" ] || [[ "$child" == "$parent"/* ]]
 }
 
 # Check if Docker image exists locally

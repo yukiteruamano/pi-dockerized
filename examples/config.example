@@ -67,13 +67,29 @@
 # you need Docker-in-Docker / Testcontainers.
 #
 # setting.docker_socket=true
+#
+# The image only contains the Docker CLI when it was built with this on, so
+# rebuild afterwards ('pi-dockerized build'); the wrapper warns if it is missing.
 
 # Security policy mode enforced by the baked security-guard extension.
-#   strict   = every vendored opencode-policy pattern
+#   strict   = every vendored opencode-policy pattern, and tools outside Pi's
+#              built-in set (MCP tools, other extensions) are refused unless
+#              listed in allowed_tools
 #   balanced = drop cloud/multi-tenant rules and common dev false positives (default)
 #   off      = vendored patterns disabled (built-in backstops still apply)
 #
+# One session can override it: pi-dockerized run --policy strict
 # setting.security_policy=balanced
+
+# Tools that strict mode lets through besides Pi's own (comma-separated names).
+# Ignored in balanced/off.
+#
+# setting.allowed_tools=
+
+# Require `update`/`upgrade` to verify the signature of the upstream head
+# (git verify-commit) before pulling. Needs the maintainer's key in GnuPG.
+#
+# setting.verify_updates=false
 
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g
@@ -97,6 +113,13 @@
 # Syntax: mount.<name>=<host_path>:<container_path>[:<mode>]
 #
 # Mounts are read-only by default. Append :rw for read-write access.
+#
+# Refused (the run stops): your home directory or a parent of it, ~/.ssh,
+# ~/.gnupg, ~/.aws, ~/.kube, ~/.docker, ~/.config/gcloud, ~/.config/gh, ~/.netrc,
+# ~/.git-credentials, the wrapper's own config directory, the Docker socket,
+# relative host paths, container targets that would hide system paths, and
+# targets inside the baked agent directory. Symlinks are resolved first. A host
+# path that does not exist is skipped with a warning.
 #
 # Common examples:
 #   mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig

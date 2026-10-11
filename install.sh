@@ -19,16 +19,16 @@ INSTALL_DIR="${PI_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-dockerize
 FORWARD_ARGS=("$@")
 _has_yes=false
 _has_help=false
-_for_only=false
 for _a in "$@"; do
     case "$_a" in
     --yes) _has_yes=true ;;
     -h | --help) _has_help=true ;;
-    esac done
+    esac
+done
 if [ "$_has_help" = false ] && [ "$_has_yes" = false ] && [ ! -t 0 ]; then
     FORWARD_ARGS=(--yes "$@")
 fi
-unset _a _has_yes _has_help _for_only
+unset _a _has_yes _has_help
 
 # Running from a local checkout (./install.sh): use it directly, no cloning.
 # When piped via curl BASH_SOURCE is empty/a pipe, so skip this branch.
@@ -54,20 +54,14 @@ if [ ! -d "$INSTALL_DIR" ]; then
     fi
     echo "Cloning pi-dockerized into $INSTALL_DIR ..."
     git clone "$REPO_URL" "$INSTALL_DIR"
-elif [ -d "$INSTALL_DIR/.git" ]; then
-    # Reused checkout: ensure upstream tracking first (manual checkouts
-    # via init + remote add lack @{u}, which breaks `update`/`upgrade`).
-    # Best-effort, never fails the install.
-    if command -v git >/dev/null 2>&1; then
-        _br=$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-        if [ -n "$_br" ] && [ "$_br" != "HEAD" ] \
-            && ! git -C "$INSTALL_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
-            && git -C "$INSTALL_DIR" rev-parse --verify "refs/remotes/origin/$_br" >/dev/null 2>&1; then
-            git -C "$INSTALL_DIR" branch --set-upstream-to="origin/$_br" "$_br" >/dev/null 2>&1 \
-                && echo "Tracking upstream: $_br -> origin/$_br (self-update enabled)" \
-                || echo "warning: could not set upstream tracking in $INSTALL_DIR" >&2
-        fi
-        unset _br
+elif command -v git >/dev/null 2>&1; then
+    # Reused checkout. Manual checkouts (init + remote add) lack an upstream
+    # branch, which breaks `update`/`upgrade` and the fast-forward below: fix
+    # that first with the same helper the wizard uses. Best-effort throughout.
+    if [ -f "$INSTALL_DIR/lib/config-lib.sh" ] && [ -f "$INSTALL_DIR/lib/install-lib.sh" ]; then
+        # shellcheck source=/dev/null
+        (source "$INSTALL_DIR/lib/config-lib.sh" && source "$INSTALL_DIR/lib/install-lib.sh" &&
+            ensure_git_upstream "$INSTALL_DIR") || true
     fi
     # Best-effort fast-forward so curl always installs latest.
     if git -C "$INSTALL_DIR" fetch origin >/dev/null 2>&1; then

@@ -2,6 +2,7 @@
 
 # prompts.sh - interactive configuration and output helpers.
 # Sourced by lib/config-lib.sh (not executable directly).
+# shellcheck disable=SC2034 # globals are defined here and consumed by the other sourced modules
 # NOTE: no "set -e" — library file; callers control their own error handling.
 
 # ============================================
@@ -274,16 +275,41 @@ interactive_config_setup() {
 # OUTPUT HELPERS
 # ============================================
 
+# One-line summary of what this session exposes, plus a warning for the
+# settings that remove a safeguard. Shown before every project session.
+# Usage: print_session_exposure
+print_session_exposure() {
+    local env_file=no
+    [ -n "$ENV_FILE" ] && env_file=yes
+    local summary
+    summary="network=$NETWORK policy=$SECURITY_POLICY ssh-agent=$(_onoff "$SSH_AGENT_SUPPORT")"
+    summary="$summary gpg-agent=$(_onoff "$GPG_AGENT_SUPPORT") docker-socket=$(_onoff "$DOCKER_SOCKET")"
+    summary="$summary mounts=${#CUSTOM_MOUNTS[@]} env-file=$env_file"
+    [ -n "$PI_PROFILE" ] && summary="profile=$PI_PROFILE $summary"
+    [ "$SESSION_UNTRUSTED" = true ] && summary="untrusted $summary"
+    print_info "Exposure: $summary"
+    if [ "$SECURITY_POLICY" = off ]; then
+        print_warning "Security policy is 'off': only the built-in backstops are enforced."
+    fi
+}
+
+_onoff() {
+    if [ "$1" = true ]; then echo on; else echo off; fi
+}
+
 # Print parsed configuration.
 print_config() {
     echo "Pi Dockerized configuration"
     echo "  Config file:        $CONFIG_FILE"
+    echo "  Profile:            ${PI_PROFILE:-default}"
     echo "  State tree:         $PI_HOME"
     echo "  SSH agent:          $SSH_AGENT_SUPPORT"
     echo "  GnuPG agent:        $GPG_AGENT_SUPPORT"
     echo "  Docker socket:      $DOCKER_SOCKET"
     echo "  Network:            $NETWORK"
     echo "  Security policy:    $SECURITY_POLICY"
+    echo "  Allowed tools:      ${ALLOWED_TOOLS:-<none>}"
+    echo "  Verify updates:     $VERIFY_UPDATES"
     echo "  Memory:             ${MEMORY:-<none>}"
     echo "  CPUs:               ${CPUS:-<none>}"
     echo "  Secrets file:       ${ENV_FILE:-<none>}"
