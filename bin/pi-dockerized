@@ -334,18 +334,33 @@ run_pi() {
         return 0
     fi
 
+    if [ "${PI_DOCKERIZED_DEBUG:-}" = 1 ]; then
+        print_info "Debug — docker command:"
+        dry_run_print "${docker_cmd[@]}"
+    fi
+
+    # Pi decides between its TUI and print mode from the terminal: with a TTY it
+    # opens the TUI, otherwise it runs in print mode and exits immediately with
+    # no output. Warn early so a missing TTY does not look like a silent hang.
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        print_warning "No interactive terminal detected (stdin/stdout is not a TTY)."
+        print_info "Pi will start in print mode and exit at once. Run from a real terminal,"
+        print_info "or use '$0 exec \"...\"' for non-interactive prompts."
+    fi
+
     # Stop the per-session GnuPG relay when the container exits.
     trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT INT TERM
-    if ! "${docker_cmd[@]}"; then
-        stop_gpg_relay "$GPG_RELAY_SOCKET"
-        GPG_RELAY_SOCKET=""
-        trap - EXIT INT TERM
-        print_error "Pi exited with an error"
-        exit 1
-    fi
+    local rc=0
+    "${docker_cmd[@]}" || rc=$?
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
     trap - EXIT INT TERM
+    if [ "$rc" -ne 0 ]; then
+        print_error "Pi exited with an error (container exit code $rc)"
+        print_info "Re-run with PI_DOCKERIZED_DEBUG=1 to print the docker command,"
+        print_info "and '$0 doctor' to check the in-container setup."
+        exit 1
+    fi
 }
 
 # Self-update helpers: `update` and `upgrade` both perform the full upgrade
