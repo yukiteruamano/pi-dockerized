@@ -101,7 +101,7 @@ RUN pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@e
 RUN test "$(pi --version 2>&1 | tail -n 1)" != "0.0.0"
 
 # Pi's agent directory. Extensions, settings, AGENTS.md, prompts and themes are
-# baked here read-only at build time; the writable state (skills, sessions,
+# baked here read-only at build time; the writable state (sessions,
 # auth, MCP OAuth, trust, logs) is bind-mounted from the host at run time.
 ENV PI_CODING_AGENT_DIR="/home/coder/.pi/agent"
 # Do NOT set PI_PACKAGE_DIR: Pi reads its own package.json (version), themes and
@@ -153,7 +153,7 @@ RUN set -euo pipefail; \
 # Lock the baked *resources* read-only. The runtime user joins the image's
 # `coder` group (via --group-add), so removing write bits makes extensions,
 # settings, AGENTS.md, prompts, themes and the package store immutable to the
-# agent. The writable state (skills/, sessions/, auth.json, mcp-auth.json,
+# agent. The writable state (sessions/, auth.json, mcp-auth.json,
 # trust.json, mcp.log) is intentionally left writable in the image and is
 # bind-mounted read-write from the host at run time; keeping it writable also
 # means Pi still starts if a state mount is ever missing.

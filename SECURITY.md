@@ -19,7 +19,7 @@ baked security extension (`extensions/pi-security-guard/`).
 | Control | How |
 |---------|-----|
 | Non-root execution | Image has no `sudo` (no binary, no sudoers); the wrapper starts the container with `--user <host uid>:<host gid>`, `--cap-drop=ALL` and `--security-opt no-new-privileges:true`. `entrypoint.sh` performs no privilege changes |
-| Immutable extensions | Extensions/packages are installed at image build time (`install-extensions`) and locked read-only together with `settings.json`, `AGENTS.md`, `mcp.json`, prompts and themes; the agent cannot add, remove or update them. The writable state (`skills/`, `sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
+| Immutable extensions | Extensions/packages are installed at image build time (`install-extensions`) and locked read-only together with `settings.json`, `AGENTS.md`, `mcp.json`, prompts and themes; the agent cannot add, remove or update them. `skills/` is mounted read-only from the host. The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
 | Read-only MCP config | `mcp.json` is mounted **read-only** from the host; only OAuth tokens (`mcp-auth.json`) and `trust.json` are writable |
 | Project-only writes | Only the project directory and `/tmp/pi` are writable (enforced by the guard, resolving symlinks via `realpath` so a link inside the project cannot escape) |
 | Secret reads | The guard refuses reads of `.env` (except `.env.example`), `*.pem`, `*.key`, key-like names, `auth.json`, `mcp-auth.json`, `trust.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, SSH keys and `private-keys-v1.d/` — via both the file tools and shell commands |
@@ -53,8 +53,9 @@ baked security extension (`extensions/pi-security-guard/`).
   filesystem (`socat`, under the wrapper config dir) for the session.
 - **Baked extensions require a rebuild to change.** Editing `install-extensions`
   or the guard has no effect until `pi-dockerized build` (or `update`).
-- **Skills are writable.** `skills/` is the one resource mounted read-write, so
-  a session can add or change skills (which instruct the model). Review them.
+- **Skills are read-only.** `skills/` is mounted read-only from the host, so a
+  session cannot add or change skills (which instruct the model). Edit them on
+  the host and review what you install.
 - **Project trust is disabled.** The baked `settings.json` sets
   `defaultProjectTrust: "never"`, so project `.pi/` extensions, MCP servers,
   skills and prompts are not loaded.

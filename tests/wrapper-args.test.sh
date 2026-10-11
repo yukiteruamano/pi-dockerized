@@ -78,7 +78,7 @@ build_standard_volume_args "$PROJECT" false
 vols=" ${VOLUME_ARGS[*]} "
 assert_contains "$vols" "$PROJECT:" "project must be mounted"
 assert_contains "$vols" "$AGENT/mcp.json:/home/coder/.pi/agent/mcp.json:ro" "mcp.json must be mounted read-only"
-assert_contains "$vols" "$AGENT/skills:/home/coder/.pi/agent/skills:rw" "skills must be mounted read-write"
+assert_contains "$vols" "$AGENT/skills:/home/coder/.pi/agent/skills:ro" "skills must be mounted read-only"
 assert_contains "$vols" "$AGENT/sessions:/home/coder/.pi/agent/sessions:rw" "sessions must be mounted read-write"
 assert_contains "$vols" "$AGENT/auth.json:/home/coder/.pi/agent/auth.json:rw" "auth.json must be mounted read-write"
 assert_contains "$vols" "$AGENT/mcp-auth.json:/home/coder/.pi/agent/mcp-auth.json:rw" "mcp-auth.json must be mounted read-write"

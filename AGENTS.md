@@ -152,7 +152,7 @@ functions if defined (`config_info` → `print_info`).
 - `ensure_pi_dirs` / `ensure_pi_state` — create the host agent tree and seed
   `mcp.json`, `skills/`, `sessions/` and the runtime state files.
 - `build_standard_volume_args "$project_dir" [docker_socket]` — populates
-  `VOLUME_ARGS` (project rw; `mcp.json` ro; `skills/`, `sessions/`,
+  `VOLUME_ARGS` (project rw; `mcp.json` and `skills/` ro; `sessions/`,
   `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`, `.npm` rw; `~/.claude`
   and `~/.agents` ro; optional docker socket).
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` (`--rm`,
@@ -200,8 +200,8 @@ Secrets only travel via `setting.env_file` (dotenv under the config dir,
 
 ### Security Rules
 
-- The agent dir is baked and immutable; only `skills/`, `sessions/` and the
-  runtime state files are bind-mounted read-write; `mcp.json` is mounted
+- The agent dir is baked and immutable; only `sessions/` and the runtime
+  state files are bind-mounted read-write; `mcp.json` and `skills/` are mounted
   read-only. `$CONFIG_DIR` is never mounted.
 - **Never commit:** `.env`, `auth.json`, `*.pem`, `*.key`, credentials.
 - Docker socket, SSH and GnuPG forwarding are all opt-in and off by default.
@@ -219,7 +219,7 @@ Secrets only travel via `setting.env_file` (dotenv under the config dir,
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (`$HOME` stripped) | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
-| `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **rw** | Skills |
+| `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache |

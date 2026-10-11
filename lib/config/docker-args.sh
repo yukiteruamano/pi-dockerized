@@ -177,8 +177,8 @@ build_common_docker_args() {
 # stripped) so that Pi stores a unique, meaningful directory per project.
 # The read-only resources (settings, extensions, AGENTS.md, prompts, themes,
 # models) are baked into the image and are NOT mounted. Only mcp.json (RO, host
-# edited), the writable skills dir, the session store and the runtime files Pi
-# persists are bind-mounted.
+# edited), the skills dir (RO, host edited), the session store and the runtime
+# files Pi persists are bind-mounted.
 build_standard_volume_args() {
     local project_dir="$1"
     local include_docker_socket="${2:-false}"
@@ -207,9 +207,10 @@ build_standard_volume_args() {
         config_warning "mcp.json not found at $agent/mcp.json (run 'pi-dockerized install')"
     fi
 
-    # Skills are the one resource the user keeps writable in the container.
+    # Skills instruct the model, so they are host-managed and mounted read-only:
+    # a session cannot add or change them. Edit them on the host.
     if [ -d "$agent/skills" ]; then
-        VOLUME_ARGS+=(-v "$agent/skills:$PI_AGENT_CONTAINER_DIR/skills:rw")
+        VOLUME_ARGS+=(-v "$agent/skills:$PI_AGENT_CONTAINER_DIR/skills:ro")
     fi
 
     # Session store (Pi persists conversations here; sessionDir is fixed to this

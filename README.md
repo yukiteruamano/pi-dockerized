@@ -18,9 +18,10 @@ host stays protected.
 - **Extensions/plugins are installed at image build time** from
   `install-extensions`, then locked read-only. The agent cannot add, remove or
   update extensions.
-- **Everything is read-only except skills.** Settings, extensions, prompts,
-  themes, AGENTS.md and models are baked RO; `mcp.json` is mounted RO from the
-  host; only `skills/` (plus the runtime state Pi must write) is writable.
+- **Everything is read-only except runtime state.** Settings, extensions,
+  prompts, themes, AGENTS.md and models are baked RO; `mcp.json` and `skills/`
+  are mounted RO from the host; only `sessions/` and the runtime state Pi must
+  write are writable.
 - **Auth uses provider API keys** from `setting.env_file`. Pi has no
   `auth login` subcommand; interactive login happens through the TUI `/login`,
   which this wrapper does not use.
@@ -144,12 +145,12 @@ Use `${VAR}` references (never literal secrets) — the wrapper refuses inline
 secrets. For OAuth servers, `pi-dockerized mcp login <server>` writes tokens to
 `mcp-auth.json` (mounted read-write, persisted on the host).
 
-## Skills (the one writable resource)
+## Skills (host-managed, read-only)
 
 Skills live under
 `~/.config/pi-dockerized/home/.pi/agent/skills/<name>/SKILL.md` and are mounted
-read-write. Create and edit them freely; Pi picks them up on next start
-(`/reload` inside a session). Project skills (`.pi/skills/`) are disabled by the
+**read-only**: create and edit them on the host, never from a session. Pi picks
+them up on next start (`/reload` inside a session). Project skills (`.pi/skills/`) are disabled by the
 baked `defaultProjectTrust: "never"`.
 
 ## Configuration
@@ -179,7 +180,7 @@ See `examples/config.example` for the full reference.
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | path with `$HOME` stripped | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
-| `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **rw** | Skills (the writable resource) |
+| `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions (`sessionDir`) |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache (npx MCP servers) |

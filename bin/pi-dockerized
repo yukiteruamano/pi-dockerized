@@ -80,7 +80,7 @@ if [ -f "$agent/mcp.json" ]; then
 else
     note "mcp.json: MISSING"; status=1
 fi
-[ -w "$agent/skills" ] && note "skills: writable" || note "skills: NOT writable"
+if [ -w "$agent/skills" ]; then note "skills: WRITABLE (expected read-only)"; status=1; else note "skills: read-only"; fi
 echo "== credentials =="
 for v in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY; do
     if [ -n "${!v:-}" ]; then note "$v: present"; fi
