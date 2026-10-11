@@ -104,7 +104,12 @@ RUN mkdir -p /home/coder/.pi/agent/extensions \
     /home/coder/.pi/agent/themes \
     /home/coder/.pi/agent/sessions \
     /home/coder/.pi/packages \
-    /home/coder/.npm
+    /home/coder/.npm && \
+    printf '{\n  "mcpServers": {}\n}\n' > /home/coder/.pi/agent/mcp.json && \
+    printf '{}\n' > /home/coder/.pi/agent/auth.json && \
+    printf '{}\n' > /home/coder/.pi/agent/mcp-auth.json && \
+    printf '{}\n' > /home/coder/.pi/agent/trust.json && \
+    : > /home/coder/.pi/agent/mcp.log
 
 # Seed the baked settings (security defaults) and the guard before installing
 # extensions (so `pi install` appends its package declarations to settings.json).
