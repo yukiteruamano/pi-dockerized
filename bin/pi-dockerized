@@ -337,6 +337,10 @@ run_pi() {
     if [ "${PI_DOCKERIZED_DEBUG:-}" = 1 ]; then
         print_info "Debug — docker command:"
         dry_run_print "${docker_cmd[@]}"
+        # Preflight: start the very same container to run `pi --version`, so a
+        # broken mount or startup error is visible before the TUI takes over.
+        print_info "Debug — preflight (pi --version):"
+        "${docker_cmd[@]}" --version || print_warning "Preflight failed (see the error above)."
     fi
 
     # Pi decides between its TUI and print mode from the terminal: with a TTY it
