@@ -17,7 +17,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # together with their *_INSTALL_SHA256 (Renovate does not manage them).
 ARG NVM_VERSION=v0.40.8
 # renovate: datasource=npm depName=pnpm
-ARG PNPM_VERSION=12.10.1
+ARG PNPM_VERSION=12.11.2
 # uv release; override with --build-arg UV_VERSION=x.y.z
 ARG UV_VERSION=0.13.0
 # Node.js major installed through nvm (Pi requires >= 22.19). The minor/patch
