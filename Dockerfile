@@ -12,6 +12,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # moving tag breaks reproducibility and widens supply-chain exposure.
 ARG NVM_VERSION=v0.40.8
 ARG PNPM_VERSION=12.10.1
+# uv release; override with --build-arg UV_VERSION=x.y.z
+ARG UV_VERSION=0.13.0
 # Pi CLI release; override with --build-arg PI_VERSION=x.y.z
 ARG PI_VERSION=v1.1.0
 
@@ -68,7 +70,7 @@ RUN curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/instal
 
 # Install uv (Python package manager) as coder user
 # See: https://docs.astral.sh/uv/getting-started/installation/
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
 
 # Install pnpm via the official standalone installer (native binary, no Node needed)
 # The script installs to $PNPM_HOME (default: ~/.local/share/pnpm) and appends a
@@ -86,11 +88,17 @@ RUN curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION="${PNPM_VERSION
 # ~/.local/bin holds user-installed CLIs (uv tools, pipx apps).
 ENV PATH="$PNPM_HOME/bin:$NVM_DIR/default:/home/coder/.local/bin:$PATH"
 
+# NVM installs the current Node LTS and the Docker apt repo tracks `stable` on
+# purpose: both follow upstream security fixes. Pi, uv, pnpm and nvm are pinned.
+
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
 # ARG PI_VERSION pins the release (default v1.1.0).
 ARG PI_BUILD_TIME=0
 RUN pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@earendil-works/pi-coding-agent && pi --version
+# Guard: Pi reports 0.0.0 when it cannot find its own package.json (e.g. when
+# PI_PACKAGE_DIR is overridden). Fail the build instead of shipping that image.
+RUN test "$(pi --version 2>&1 | tail -n 1)" != "0.0.0"
 
 # Pi's agent directory. Extensions, settings, AGENTS.md, prompts and themes are
 # baked here read-only at build time; the writable state (skills, sessions,
