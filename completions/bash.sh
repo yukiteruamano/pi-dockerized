@@ -44,7 +44,7 @@ _pi_dockerized() {
             fi
             ;;
         upgrade|update)
-            mapfile -t COMPREPLY < <(compgen -W "--check --yes --no-build" -- "${cur}")
+            mapfile -t COMPREPLY < <(compgen -W "--check --yes --no-build --pi-version" -- "${cur}")
             return 0
             ;;
         install)

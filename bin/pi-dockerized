@@ -372,7 +372,7 @@ run_pi() {
 # Self-update helpers: `update` and `upgrade` both perform the full upgrade
 # (git pull from GitHub + host-state sync + image rebuild). They differ
 # only in prompting defaults: `upgrade` asks before pulling when interactive,
-# `update` pulls without asking. Both accept [--check] [--yes] [--no-build].
+# `update` pulls without asking. Both accept [--check] [--yes] [--no-build] [--pi-version X].
 # Usage: _git_pull_wrapper <yes:true|false> <check_only:true|false>
 _git_pull_wrapper() {
     local yes="$1" check_only="$2"
@@ -430,44 +430,62 @@ _git_pull_wrapper() {
     return 0
 }
 
-# Rebuild the image with cache-busting so the latest Pi is installed.
+# Rebuild the image with cache-busting so the requested Pi release is installed.
+# The Dockerfile pins PI_VERSION; `update` overrides it (default: latest).
+# Usage: _rebuild_pi_image [pi_version]
 _rebuild_pi_image() {
-    print_info "Rebuilding image with latest code..."
-    docker build --build-arg "PI_BUILD_TIME=$(date +%s)" -t "$IMAGE_NAME" "$REPO_ROOT"
+    local pi_version="${1:-latest}"
+    print_info "Rebuilding image with latest code (Pi: $pi_version)..."
+    docker build --build-arg "PI_VERSION=$pi_version" \
+        --build-arg "PI_BUILD_TIME=$(date +%s)" -t "$IMAGE_NAME" "$REPO_ROOT"
     print_info "Updated Pi version:"
     docker run --rm --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
 }
 
 # Parse self-update flags shared by `update` and `upgrade`.
-# Sets: _UP_CHECK, _UP_YES, _UP_NO_BUILD. Returns 0 on success/--help, 1 on bad usage.
+# Sets: _UP_CHECK, _UP_YES, _UP_NO_BUILD, _UP_PI_VERSION. Returns 0 on
+# success/--help, 1 on bad usage.
 # Usage: _parse_self_update_flags <command-name> [flags...]
 _parse_self_update_flags() {
     local cmd="$1"; shift
-    _UP_CHECK=false; _UP_YES=false; _UP_NO_BUILD=false
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
+    _UP_CHECK=false; _UP_YES=false; _UP_NO_BUILD=false; _UP_PI_VERSION=latest
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
         --check) _UP_CHECK=true ;;
         --yes) _UP_YES=true ;;
         --no-build) _UP_NO_BUILD=true ;;
+        --pi-version)
+            if [ -z "${2:-}" ]; then
+                print_error "--pi-version needs a value (latest or x.y.z)"
+                return 1
+            fi
+            if ! [[ "$2" =~ ^(latest|v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?)$ ]]; then
+                print_error "Invalid --pi-version '$2' (use latest or x.y.z)"
+                return 1
+            fi
+            _UP_PI_VERSION="$2"
+            shift
+            ;;
         --help | -h)
-            echo "Usage: $0 $cmd [--check] [--yes] [--no-build]"
-            echo "  --check    only report whether an update is available"
-            echo "  --yes      pull and rebuild without asking"
-            echo "  --no-build pull + sync only, skip the image rebuild"
+            echo "Usage: $0 $cmd [--check] [--yes] [--no-build] [--pi-version X]"
+            echo "  --check            only report whether an update is available"
+            echo "  --yes              pull and rebuild without asking"
+            echo "  --no-build         pull + sync only, skip the image rebuild"
+            echo "  --pi-version X     Pi release to install: latest (default) or x.y.z"
             return 0
             ;;
         *)
-            print_error "Unknown $cmd option: $arg (use --check|--yes|--no-build)"
+            print_error "Unknown $cmd option: $1 (use --check|--yes|--no-build|--pi-version)"
             return 1
             ;;
         esac
+        shift
     done
     return 0
 }
 
 # Full upgrade: git pull + host-state sync + image rebuild.
-# Usage: full_upgrade <command-name> [--check] [--yes] [--no-build]
+# Usage: full_upgrade <command-name> [--check] [--yes] [--no-build] [--pi-version X]
 full_upgrade() {
     local cmd="$1"; shift
     _parse_self_update_flags "$cmd" "$@" || return $?
@@ -504,18 +522,18 @@ full_upgrade() {
         print_info "Current Pi version:"
         docker run --rm --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
     fi
-    _rebuild_pi_image
+    _rebuild_pi_image "$_UP_PI_VERSION"
     print_success "Upgrade complete (code + config + image)."
 }
 
 # Self-update the wrapper checkout from GitHub (Doom-style `doom upgrade`).
-# Usage: upgrade_wrapper [--check] [--yes] [--no-build]
+# Usage: upgrade_wrapper [--check] [--yes] [--no-build] [--pi-version X]
 upgrade_wrapper() {
     full_upgrade upgrade "$@"
 }
 
 # Function to update Pi (full upgrade: git pull + sync + rebuild).
-# Usage: update_pi [--check] [--yes] [--no-build]
+# Usage: update_pi [--check] [--yes] [--no-build] [--pi-version X]
 update_pi() {
     full_upgrade update "$@"
 }
@@ -707,9 +725,9 @@ Commands:
     stats               Show session usage statistics (best-effort)
     doctor              Diagnose guard, config, credentials, SSH/GPG forwarding
     install [OPTS]      First-time install / repair PATH, config, completions, aliases
-    upgrade [--check|--yes|--no-build]  Full upgrade: git pull + sync + image rebuild
+    upgrade [--check|--yes|--no-build|--pi-version X]  Full upgrade: git pull + sync + image rebuild
     build               Build the Docker image
-    update [--check|--yes|--no-build]   Full upgrade: git pull + sync + image rebuild
+    update [--check|--yes|--no-build|--pi-version X]   Full upgrade: git pull + sync + image rebuild
     version             Show wrapper, guard and Pi versions
     config [show|edit|path|sync]      Wrapper config (INI)
     config pi [path|edit]             Pi agent config (mcp.json)

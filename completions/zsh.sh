@@ -56,7 +56,7 @@ _pi_dockerized() {
                     _describe -t config_cmds 'config subcommand' config_cmds
                     ;;
                 upgrade|update)
-                    _values 'self-update flag' --check --yes --no-build
+                    _values 'self-update flag' --check --yes --no-build --pi-version
                     ;;
                 install)
                     _values 'install flag' --yes --only
