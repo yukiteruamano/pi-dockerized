@@ -1,0 +1,17 @@
+# Pi extensions/packages to install at image build time.
+#
+# One `pi install` source per line. Blank lines and lines starting with '#' are
+# ignored. Exact pins are strongly recommended for reproducible builds:
+#
+#   npm:@scope/package@1.2.3
+#   git:github.com/owner/repo@v1.2.3
+#   ./local-directory
+#
+# See https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
+#
+# The security guard is NOT listed here: it is part of this project and is
+# copied into the image from extensions/pi-security-guard/.
+#
+# Examples (uncomment to use):
+# npm:@example/pi-tools@1.0.0
+# git:github.com/example/pi-tools@v1

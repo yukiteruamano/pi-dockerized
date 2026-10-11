@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+
+# Documentation (not needed in image)
+*.md
+LICENSE
+
+# Environment and config examples (not needed in image)
+.env
+examples/
+
+# Tests and CI (not needed in image)
+tests/
+.github/
+
+# Wrapper scripts not used inside the container
+# Only entrypoint.sh, container/ and extensions/ are COPYed into the image
+bin/
+lib/
+completions/
+run-simple.sh
+setup.sh
+pi-dockerized.sh
+install.sh
+
+# Docker
+.dockerignore
+.hadolint.yaml
+.shellcheckrc
+.editorconfig
