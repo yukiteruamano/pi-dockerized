@@ -350,8 +350,10 @@ run_pi() {
 
     # Stop the per-session GnuPG relay when the container exits.
     trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT INT TERM
-    local rc=0
+    local rc=0 started ended
+    started=$(date +%s)
     "${docker_cmd[@]}" || rc=$?
+    ended=$(date +%s)
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
     trap - EXIT INT TERM
@@ -360,6 +362,14 @@ run_pi() {
         print_info "Re-run with PI_DOCKERIZED_DEBUG=1 to print the docker command,"
         print_info "and '$0 doctor' to check the in-container setup."
         exit 1
+    fi
+    # A TUI session lasts until the user quits. Exiting cleanly within a couple
+    # of seconds means Pi ran in print mode (no usable TTY) and produced nothing.
+    if [ $((ended - started)) -lt 3 ]; then
+        print_warning "Pi exited immediately without opening the TUI."
+        print_info "That happens when the container has no TTY: Pi falls back to print mode."
+        print_info "Re-run with PI_DOCKERIZED_DEBUG=1 to see the docker command, or use"
+        print_info "'$0 exec \"...\"' for non-interactive prompts."
     fi
 }
 
