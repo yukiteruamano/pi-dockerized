@@ -1,0 +1,110 @@
+{
+  "description": "Vendored rule IDs dropped in the \"balanced\" policy mode (strict keeps them). Upstream admin_bypass rules are dropped as well, by flag. Every ID must exist in policies/*.json (checked by tests/security-guard.test.mjs).",
+  "groups": [
+    {
+      "reason": "Environment and variable inspection that fires on ordinary development (dotenv loaders, process.env access, npx env helpers)",
+      "ids": [
+        "env-var-ref",
+        "shell-var-expansion",
+        "bypass-var-substring",
+        "bypass-var-replace",
+        "bypass-ifs-1",
+        "bypass-brace-cmd",
+        "env-direct-1",
+        "env-direct-2",
+        "var-access-1",
+        "var-access-2",
+        "var-access-3",
+        "dotenv-1",
+        "dotenv-2",
+        "node-dotenv",
+        "python-env-1",
+        "python-env-2",
+        "python-import-environ",
+        "python-subprocess-env",
+        "node-env",
+        "pythonpath",
+        "node-path",
+        "npx-test-json",
+        "npx-env",
+        "npx-dump",
+        "npx-leak",
+        "npx-secret",
+        "npx-config",
+        "npx-diag",
+        "npx-debug",
+        "npm-run-env",
+        "node-p-process",
+        "node-print-process"
+      ]
+    },
+    {
+      "reason": "Process control and background execution used by normal dev servers and tooling",
+      "ids": [
+        "kill-9",
+        "kill-system-1",
+        "kill-system-2",
+        "sed-exec",
+        "eval-cmd",
+        "git-hooks",
+        "time-exfil-sleep",
+        "bypass-nohup",
+        "bypass-disown",
+        "bypass-setsid",
+        "exec-builtin",
+        "at-schedule"
+      ]
+    },
+    {
+      "reason": "Load and stress generators; resource abuse is bounded by the container limits instead",
+      "ids": [
+        "stress-1",
+        "stress-2",
+        "stress-test",
+        "cpu-stress",
+        "thermal-test",
+        "urandom-bzip",
+        "sysbench",
+        "fork-bomb-2",
+        "dos-yes",
+        "dos-yes-pipe"
+      ]
+    },
+    {
+      "reason": "Language toolchains and ML packages that cloud sandboxes forbid but local development needs",
+      "ids": [
+        "rustup",
+        "go-install",
+        "haskell",
+        "pip-tensorflow",
+        "pip-transformers",
+        "pip-cuda",
+        "pip-opencv",
+        "npm-tensorflow"
+      ]
+    },
+    {
+      "reason": "Encoders and dumpers that are routine in debugging",
+      "ids": [
+        "base64-pipe-2",
+        "base64-exfil-1",
+        "xxd-tool",
+        "hexdump-tool",
+        "od-tool"
+      ]
+    },
+    {
+      "reason": "Shared multi-tenant workspace rules that do not apply to a single-user local project",
+      "ids": [
+        "cd-parent-workspace",
+        "cd-dotdot-in-script",
+        "workspace-root-direct",
+        "workspace-root-ls",
+        "shared-dir-access",
+        "find-workspace",
+        "history-1",
+        "dns-exfil-3"
+      ]
+    }
+  ]
+}

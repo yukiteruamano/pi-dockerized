@@ -19,9 +19,16 @@ At image build time the Dockerfile copies `unsafe-tool-patterns.json`,
 `extensions/pi-security-guard/policies/` inside the image, next to the extension
 that loads them read-only.
 
-To refresh the rules, replace the JSON files here (keeping the
-`[{ "id", "pattern", "reason", "flags"? }]` shape) and bump `VERSION` (a plain
-integer), then rebuild the image (`pi-dockerized build`).
+To refresh the rules, run `scripts/refresh-policies.sh [--version X]`: it fetches
+the upstream package, validates every rule, and shows what was added, removed
+or edited per file. Re-run with `--apply` to write the files and bump `VERSION`
+(a plain integer, shown by `pi-dockerized version`); it then runs the guard
+tests, which also fail when `extensions/pi-security-guard/balanced-excluded.json`
+lists an ID that no longer exists. Bump `GUARD_VERSION` in
+`extensions/pi-security-guard/policy.mjs` (CI requires it), update the upstream
+version above if it moved, and rebuild the image (`pi-dockerized build`).
+`allow-patterns.json` is this project's own allowlist, not part of upstream, and
+is never touched by the script.
 
 ## License / attribution
 

@@ -39,6 +39,16 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Writable locations are the project directory and `/tmp/pi`. Any other path
   (`~/.config`, `/etc`, `/tmp` outside that folder, …) is denied. Change the
   wrapper config from the host (e.g. `pi-dockerized config edit`).
+- Never write `.git/hooks/*`, `.git/config`, `.gitmodules`, or set
+  `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.editor`,
+  `credential.helper` or `gpg.program`: Git runs them on the host.
+- A single command or tool input over 16 KiB is refused: create large files
+  with the `write` tool instead of a shell heredoc. File contents written with
+  `write`/`edit` are not scanned, only their paths.
+- Quoting tricks around a denied name (`cat .e''nv`, `c''at`) are decoded and
+  blocked like the plain form: do not try them.
+- Blocked calls are recorded in an audit log the user reviews; if a block looks
+  wrong, say so instead of rewording the command.
 - Never read or print secret files (`.env`, `*.pem`, `*.key`, `auth.json`,
   `.npmrc`, `.mcp-auth`, SSH keys). Avoid dumping the environment: it carries
   provider credentials from the secrets file (printing it is not blocked).
