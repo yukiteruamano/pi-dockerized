@@ -249,14 +249,17 @@ check_pi_state() {
 
     # The secrets file is never read for values here; only its permissions.
     if [ -n "${ENV_FILE:-}" ]; then
-        if [ ! -f "$ENV_FILE" ]; then
-            config_warning "env file not found: $ENV_FILE"
+        # The config holds the value verbatim (`~/...`); expand it as the run does.
+        local env_file
+        env_file=$(expand_tilde "$ENV_FILE")
+        if [ ! -f "$env_file" ]; then
+            config_warning "env file not found: $env_file"
             stale=true
         else
             local mode=""
-            mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || true)
+            mode=$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || true)
             if [ -n "$mode" ] && [ $((8#$mode & 8#044)) -ne 0 ]; then
-                config_warning "env file is readable by group/others ($ENV_FILE); run: chmod 600"
+                config_warning "env file is readable by group/others ($env_file); run: chmod 600"
             else
                 config_success "env file permissions ok"
             fi

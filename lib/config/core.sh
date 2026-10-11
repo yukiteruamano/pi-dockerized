@@ -223,6 +223,18 @@ test_seam() {
     return 0
 }
 
+# Expand a leading `~` (alone or as `~/...`) to $HOME. Config values are read
+# verbatim, so every consumer of a path setting must expand it the same way.
+# Usage: path=$(expand_tilde "$value")
+expand_tilde() {
+    # shellcheck disable=SC2088 # a literal tilde is exactly what is matched here
+    if [[ "$1" == "~" || "$1" == "~/"* ]]; then
+        printf '%s' "$HOME${1#"~"}"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 # Resolve a path to its canonical form without requiring it to exist (symlinks
 # followed). Falls back to the literal path where `readlink -m` is unavailable.
 # Usage: real=$(canonical_path "$path")

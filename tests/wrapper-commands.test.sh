@@ -6,6 +6,7 @@
 #
 # Usage: bash tests/wrapper-commands.test.sh
 # shellcheck disable=SC2034  # globals below are consumed by sourced config-lib.sh functions
+# shellcheck disable=SC2088 # literal tildes are test inputs, not paths to expand
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -175,6 +176,30 @@ _CONFIG_LOADED=false
 first="$(parse_config 2>&1; parse_config 2>&1)"
 count="$(printf '%s' "$first" | grep -c "unknown setting 'netwrok'")"
 assert_eq "$count" "1" "parse_config must not repeat warnings"
+
+# --- `~` in path settings -------------------------------------------------------------------------
+assert_eq "$(expand_tilde '~')" "$HOME" "a bare tilde expands"
+assert_eq "$(expand_tilde '~/a/b')" "$HOME/a/b" "~/path expands"
+assert_eq "$(expand_tilde '~other/a')" '~other/a' "~user is not expanded to the wrong home"
+assert_eq "$(expand_tilde '/x/~/y')" '/x/~/y' "a tilde in the middle is left alone"
+assert_eq "$(expand_tilde 'rel/path')" 'rel/path' "plain paths are unchanged"
+
+# Regression: `config sync --check` reported an existing `~/...` env file as missing.
+: >"$HOME/tilde-env"
+chmod 600 "$HOME/tilde-env"
+ENV_FILE='~/tilde-env'
+check_pi_state >"$TMP/state-out.txt" 2>&1
+out="$(cat "$TMP/state-out.txt")"
+assert_not_contains "$out" "env file not found" "an existing ~/ env file must be found"
+assert_contains "$out" "env file permissions ok" "the ~/ env file's permissions are checked"
+chmod 644 "$HOME/tilde-env"
+check_pi_state >"$TMP/state-out.txt" 2>&1
+assert_contains "$(cat "$TMP/state-out.txt")" "readable by group/others ($HOME/tilde-env)" "a group-readable ~/ env file is reported with its real path"
+ENV_FILE='~/does-not-exist-env'
+check_pi_state >"$TMP/state-out.txt" 2>&1
+assert_contains "$(cat "$TMP/state-out.txt")" "env file not found: $HOME/does-not-exist-env" "a missing env file is reported with its expanded path"
+ENV_FILE=""
+rm -f "$HOME/tilde-env"
 
 # --- config get / set / save preserve the file --------------------------------------------------
 init_config_file >/dev/null
