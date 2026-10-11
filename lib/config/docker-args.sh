@@ -224,6 +224,27 @@ build_standard_volume_args() {
         VOLUME_ARGS+=(-v "$agent/skills:$PI_AGENT_CONTAINER_DIR/skills:ro")
     fi
 
+    # Pi Packages installed with `pi-dockerized extensions install`: their
+    # settings.json, npm/ and git/ replace the agent's own, read-only (code the
+    # session loads but can never change). Nothing is mounted until something was
+    # installed, and never for --untrusted sessions, which run without any
+    # host-chosen extension code. The entrypoint checks that the settings still
+    # carry the sandbox's security keys.
+    if [ -f "$EXT_AGENT_DIR/settings.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then
+        local av=0 ext_part
+        json_valid "$EXT_AGENT_DIR/settings.json" || av=$?
+        if [ "$av" -eq 1 ]; then
+            config_error "$EXT_AGENT_DIR/settings.json is not valid JSON; fix it or remove it."
+            return 1
+        fi
+        VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/settings.json:$PI_AGENT_CONTAINER_DIR/settings.json:ro")
+        for ext_part in npm git; do
+            if [ -d "$EXT_AGENT_DIR/$ext_part" ]; then
+                VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/$ext_part:$PI_AGENT_CONTAINER_DIR/$ext_part:ro")
+            fi
+        done
+    fi
+
     # Session store (Pi persists conversations here; sessionDir is fixed to this
     # path by the baked settings.json).
     if [ -d "$agent/sessions" ]; then

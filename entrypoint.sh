@@ -47,6 +47,13 @@ GUARD_DIR="${PI_CODING_AGENT_DIR}/extensions/pi-security-guard"
 case "${1:-}" in
 /usr/local/lib/pi-dockerized/*) ;;
 *)
+    # The settings in effect may be the host's ext-agent file (mounted in place
+    # of the baked one): its security keys must still be the sandbox's.
+    if ! node /usr/local/lib/pi-dockerized/ext-agent.mjs check "${PI_CODING_AGENT_DIR}/settings.json"; then
+        echo "pi-dockerized: the Pi settings loosen the sandbox; refusing to start." >&2
+        echo "Fix or remove ext-agent/settings.json on the host ('pi-dockerized extensions path')." >&2
+        exit 1
+    fi
     if ! node "$GUARD_DIR/selftest.mjs"; then
         echo "pi-dockerized: the security guard failed its self-test; refusing to start." >&2
         echo "Rebuild the image ('pi-dockerized build') and run 'pi-dockerized doctor'." >&2

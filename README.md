@@ -15,13 +15,14 @@ host stays protected.
 - **Pi, not OpenCode.** The CLI is `pi`; config lives in `~/.pi/agent/`.
 - **No native permission system in Pi.** All enforcement lives in a **security
   extension** (`extensions/pi-security-guard/`) baked read-only into the image.
-- **Extensions/plugins are installed at image build time** from
-  `install-extensions`, then locked read-only. The agent cannot add, remove or
-  update extensions.
-- **Everything is read-only except runtime state.** Settings, extensions,
-  prompts, themes, AGENTS.md and models are baked RO; `mcp.json` and `skills/`
-  are mounted RO from the host; only `sessions/` and the runtime state Pi must
-  write are writable.
+- **Extensions are Pi Packages installed with the official `pi install`**
+  (`pi-dockerized extensions ...`) and kept on the host, so they survive image
+  rebuilds; sessions mount them read-only: the agent cannot add, remove or
+  change them. Only the security guard stays baked into the image.
+- **Everything is read-only except runtime state.** Settings, the guard,
+  prompts, themes, AGENTS.md and models are baked RO; `mcp.json`, `skills/` and
+  installed Pi Packages are mounted RO from the host; only `sessions/` and the
+  runtime state Pi must write are writable.
 - **Auth uses provider API keys** from `setting.env_file`. Pi has no
   `auth login` subcommand; interactive login happens through the TUI `/login`,
   which this wrapper does not use.
@@ -76,7 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/yukiteruamano/pi-dockerized/master/
 ./install.sh --yes                      # non-interactive
 ./install.sh --only config,aliases      # only some sections
 
-# Build the image (installs Pi + the extensions in install-extensions)...
+# Build the image (installs Pi; extensions are managed separately, see below)...
 pi-dockerized build
 # ...or fetch the prebuilt, signed one (needs cosign; --no-verify skips the check)
 pi-dockerized pull
@@ -101,7 +102,7 @@ pi-dockerized shell [FLAGS] [DIR] # Shell inside the sandbox (same mounts and li
 pi-dockerized auth             # Check provider credentials from setting.env_file
 pi-dockerized models           # List available models (pi --list-models)
 pi-dockerized mcp [list|login|logout]   # MCP servers (add/remove are host-only)
-pi-dockerized extensions       # List installed extensions (pi list)
+pi-dockerized extensions list|install|remove|update|path|edit   # Pi Packages via the official pi install
 pi-dockerized stats            # Session usage statistics (best-effort)
 pi-dockerized doctor           # Diagnose guard (incl. self-test), config, credentials, SSH/GPG
 pi-dockerized audit [-n N|--summary|--clear]   # Tool calls the guard blocked
@@ -155,22 +156,52 @@ the Dockerfile unless you pass `--pi-version latest|x.y.z`. Before pulling,
 The wrapper compares the image's version label with its own and warns when the
 image is stale, or lacks the Docker CLI while `setting.docker_socket` is on.
 
-## Extensions (build time)
+## Extensions (Pi Packages, host-managed)
 
-Extensions and Pi packages are declared in **`install-extensions`** (repo root),
-one `pi install` source per line:
+Extensions are **Pi Packages installed with the official `pi install`**, nothing
+else: no custom or hand-written extensions are supported. They are kept on the
+host, so an image rebuild never re-fetches them:
 
+```bash
+pi-dockerized extensions list                            # pi list
+pi-dockerized extensions install npm:@scope/pkg@1.2.3    # pi install (pin a version)
+pi-dockerized extensions install git:github.com/owner/repo@v1.2.3
+pi-dockerized extensions install npm:pkg --allow-scripts # let npm install scripts run
+pi-dockerized extensions update [SRC]                    # pi update --extensions | pi update SRC
+pi-dockerized extensions remove SRC                      # pi remove
+pi-dockerized extensions edit                            # edit Pi's settings.json by hand
 ```
-# npm:@scope/package@1.2.3
-# git:github.com/owner/repo@v1.2.3
-```
 
-At build the Dockerfile runs `pi install` for every active line, then locks the
-agent directory read-only. To change extensions, edit `install-extensions` and
-rebuild (`pi-dockerized update` or `pi-dockerized build`).
+Sources are exactly what `pi install` takes: `npm:`, `git:` and `https://` git
+URLs. Local paths are refused (the installer cannot see your disk).
 
-The security guard is not listed there: it ships with this project and is
-copied into the image from `extensions/pi-security-guard/`.
+How it works: the commands above run the real `pi` in a throwaway container whose
+agent directory is a host directory, `~/.config/pi-dockerized/home/.pi/ext-agent/`
+(`pi-dockerized extensions path`), mounted read-write. Pi writes its
+`settings.json` there and installs into `npm/` and `git/`, visible from the host.
+Sessions mount those three **read-only** over the agent's own, so the agent can
+never add, remove or change a package; changes apply to the next session. Nothing
+is mounted until the first install, and `--untrusted` sessions load none.
+
+The installer container has network on the `bridge` and **no** secrets file,
+project, session state or custom mounts; npm install scripts are skipped unless
+`--allow-scripts`. Because Pi writes the `settings.json` that sessions then use,
+the security keys (`defaultProjectTrust`, `sessionDir`, `defaultTools`,
+`enableInstallTelemetry`) are seeded from the image's defaults, reapplied after
+every Pi command, and checked again at every session start: if the file loosens
+them the container refuses to start.
+
+A package runs inside Pi with the session's full permissions, **including the
+provider keys in its environment**, and can register handlers next to the guard.
+Install only Pi Packages you would run with your own keys, and pin versions. In
+`strict` policy the tools a package registers must be listed in
+`setting.allowed_tools`.
+
+The security guard is not a package: it ships with the project and stays baked
+into the image (`extensions/pi-security-guard/`), where a session cannot touch it.
+
+**Migrating from `install-extensions`** (removed): run
+`pi-dockerized extensions install <source>` for each line you had in it.
 
 ## MCP support
 
@@ -248,6 +279,7 @@ does not exist is skipped with a warning.
 | `$PROJECT_DIR` | path with `$HOME` stripped | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
+| `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages installed with `pi install` (only once something is installed; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions (`sessionDir`) |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |
@@ -319,22 +351,23 @@ review aid rather than tamper-proof evidence.
 - `lib/config-lib.sh` — loader for the shared config/mount/env logic; the
   modules live in `lib/config/` (`core`, `mount-policy`, `state`, `gpg-ssh`,
   `docker-args`, `settings`, `parse`, `overrides`, `prompts`).
-- `lib/cmd/` — one module per group of commands (`session`, `image`, `update`,
-  `config`, `help`).
+- `lib/cmd/` — one module per group of commands (`session`, `extensions`,
+  `image`, `update`, `config`, `help`).
 - `lib/install-lib.sh` + `lib/install/` — install/uninstall wizard (sourced).
 - `Dockerfile` — image: Debian (digest-pinned) + Node/NVM + pnpm + uv + Pi + qmd;
-  bakes `container/`, `extensions/` and the packages from `install-extensions`.
+  bakes `container/` and the guard from `extensions/`.
 - `entrypoint.sh` — container entrypoint (runs the guard self-test first).
-- `container/` — baked Pi config (`settings.base.json`, `AGENTS.md`) and the
-  in-container diagnostics (`doctor.sh`, `auth-check.sh`).
-- `install-extensions` — build-time extension manifest.
+- `container/` — baked Pi config (`settings.base.json`, `AGENTS.md`), the
+  in-container diagnostics (`doctor.sh`, `auth-check.sh`) and the Pi Packages
+  helpers (`ext-install.sh` runs the official `pi`, `ext-agent.mjs` guards the
+  settings' security keys).
 - `extensions/pi-security-guard/` — security extension (`index.ts`, `policy.mjs`,
   `backstops.mjs`, `shell.mjs`, `selftest.mjs`, `balanced-excluded.json`,
   `policies/`).
 - `policies/` — vendored `opencode-policy` pattern sets (source for the guard).
 - `scripts/refresh-policies.sh` — diff/refresh the vendored pattern sets.
 - `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
-  `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
+  `ext-agent.test.mjs`, `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
 - `CHANGELOG.md` — release notes.
 
 ## License

@@ -39,6 +39,14 @@ PI_HOME="${PI_HOME:-$CONFIG_DIR/home}"
 # build time; only the paths listed below are bind-mounted from the host.
 PI_AGENT_CONTAINER_DIR="/home/coder/.pi/agent"
 
+# Pi Packages (extensions): installed with the official `pi install` in a
+# throwaway container whose agent directory is this host directory (settings.json,
+# npm/, git/). Sessions mount those three read-only over the agent's own, so
+# packages survive image rebuilds. The guard is not a package: it stays baked in
+# the image, immutable.
+EXT_AGENT_DIR="${EXT_AGENT_DIR:-$PI_HOME/.pi/ext-agent}"
+PI_EXT_AGENT_CONTAINER_DIR="/home/coder/.pi/ext-agent"
+
 # Directory holding active GPG relay sockets (one subdir per session). The relay
 # lives on a normal filesystem so Docker can bind it (it cannot bind sockets
 # under the per-user /run/user tmpfs).

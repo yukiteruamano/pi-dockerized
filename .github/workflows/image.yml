@@ -68,6 +68,12 @@ jobs:
             test -n "$v" && test "$v" != "0.0.0"
             node /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs
             test -x /usr/local/lib/pi-dockerized/doctor.sh
+            test -x /usr/local/lib/pi-dockerized/ext-install.sh
+            # Official Pi reads a seeded ext-agent dir; the seed keeps the sandbox keys.
+            d=$(mktemp -d)
+            node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d"
+            node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$d/settings.json"
+            PI_CODING_AGENT_DIR="$d" pi list
             echo "pi $v"
           '
 

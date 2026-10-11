@@ -29,9 +29,10 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 -x -S warning
 cat Dockerfile | docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --config /dev/null -
 
 # 4. Guard + wrapper tests (Node.js 22.6+ for the extension test)
-for f in extensions/pi-security-guard/*.mjs; do node --check "$f"; done
+for f in extensions/pi-security-guard/*.mjs container/*.mjs; do node --check "$f"; done
 node tests/security-guard.test.mjs
 node tests/guard-extension.test.mjs
+node tests/ext-agent.test.mjs
 bash tests/wrapper-args.test.sh
 bash tests/wrapper-commands.test.sh
 ```
@@ -78,11 +79,19 @@ CI also builds nothing on the contributor's machine, but the image workflow
   is covered by `tests/guard-extension.test.mjs`. Regexes over user text must
   stay cheap: the oversize/perf checks in the policy test exist for a reason.
 
-## Extensions at build time
+## Extensions
 
-- New extensions/packages go in `install-extensions` (one `pi install` source
-  per line, exact pins preferred). They are installed and locked read-only in
-  the image.
+- Extensions are Pi Packages, installed on the host with the **official** Pi
+  package commands (`pi-dockerized extensions install`, via
+  `container/ext-install.sh`). Do not add a custom installer, support for
+  local/hand-written extensions, or a build-time install step: only the security
+  guard is baked in.
+- `container/ext-agent.mjs` keeps the settings' security keys intact (seed after
+  install, enforce, check at every start; tested by `tests/ext-agent.test.mjs`).
+  If you add a key to `container/settings.base.json` that is part of the sandbox,
+  add it to `SECURITY_KEYS` there.
+- Package sources are validated by `validate_ext_source` (`lib/cmd/extensions.sh`):
+  keep it to what `pi install` takes, and never let a value be read as an option.
 
 ## Docs
 

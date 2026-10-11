@@ -37,21 +37,24 @@ No package manager files and no build step for the wrapper itself.
 - `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` (root) — Deprecated compat
   shims, removed in v1.0.
 - `Dockerfile` — Container image (digest-pinned Debian trixie-slim + Node.js/NVM +
-  pnpm + uv + Pi + qmd; bakes `container/`, `extensions/` and the packages in
-  `install-extensions`).
+  pnpm + uv + Pi + qmd; bakes `container/` and the guard from `extensions/`;
+  no extensions are installed at build time).
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, runs the
   guard self-test, sets `PI_CODING_AGENT_DIR`, execs the command).
 - `container/settings.base.json`, `container/AGENTS.md` — Baked Pi config/agents
-  rules (copied into the image's agent dir). `container/doctor.sh`,
-  `container/auth-check.sh` — in-container diagnostics (baked root-owned).
-- `install-extensions` — Build-time manifest of `pi install` sources.
+  rules (copied into the image's agent dir; `settings.base.json` is also baked as
+  a reference copy in `/usr/local/lib/pi-dockerized/`). `container/doctor.sh`,
+  `container/auth-check.sh` — in-container diagnostics; `container/ext-install.sh`
+  — runs the official Pi package commands for `extensions`;
+  `container/ext-agent.mjs` — seeds/enforces/checks the settings' security keys
+  (all baked root-owned).
 - `extensions/pi-security-guard/` — Security extension (`index.ts`,
   `policy.mjs`, `backstops.mjs`, `shell.mjs`, `selftest.mjs`,
   `balanced-excluded.json`, `policies/`).
 - `policies/` — Vendored `opencode-policy` pattern sets (source for the guard);
   `scripts/refresh-policies.sh` refreshes them.
 - `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
-  `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
+  `ext-agent.test.mjs`, `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
 - `CHANGELOG.md` — Release notes; `renovate.json` — dependency updates.
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide.
 - `examples/config.example` — Example user config (INI).
@@ -71,7 +74,7 @@ pi-dockerized models                          # List models (pi --list-models)
 pi-dockerized exec [FLAGS] MSG|-              # Non-interactive prompt (pi --print)
 pi-dockerized shell [FLAGS] [DIR]             # Shell inside the sandbox
 pi-dockerized mcp [ARGS]                      # MCP servers (default: list)
-pi-dockerized extensions                      # List installed extensions (pi list)
+pi-dockerized extensions list|install|remove|update|path|edit   # Pi Packages (official Pi install)
 pi-dockerized stats                           # Session usage statistics
 pi-dockerized doctor                          # Diagnose guard, config, forwarding
 pi-dockerized audit [-n N|--summary|--clear]  # Calls the guard blocked
@@ -91,9 +94,10 @@ bash -n bin/pi-dockerized install.sh entrypoint.sh
 for f in lib/*.sh lib/*/*.sh completions/*.sh scripts/*.sh container/*.sh tests/*.sh; do bash -n "$f"; done
 shellcheck -x -S warning bin/* lib/*.sh lib/*/*.sh install.sh entrypoint.sh scripts/*.sh container/*.sh completions/*.sh tests/*.sh
 cat Dockerfile | docker run --rm -i hadolint/hadolint:v2.12.0 hadolint -
-for f in extensions/pi-security-guard/*.mjs; do node --check "$f"; done
+for f in extensions/pi-security-guard/*.mjs container/*.mjs; do node --check "$f"; done
 node tests/security-guard.test.mjs
 node tests/guard-extension.test.mjs
+node tests/ext-agent.test.mjs
 bash tests/wrapper-args.test.sh
 bash tests/wrapper-commands.test.sh
 
@@ -200,6 +204,13 @@ stderr so command output stays pipeable. Color codes are plain variables
 - `parse_session_flags` / `apply_session_overrides` — per-invocation flags.
 - `prepare_session` → `build_session_cmd` → `launch_session` (`lib/cmd/session.sh`)
   — every container command goes through these three.
+- `EXT_AGENT_DIR` / `run_ext_install` (`lib/cmd/extensions.sh`) — Pi Packages:
+  only the official Pi package commands (never a custom installer, never local
+  paths: `validate_ext_source`). They run in a throwaway rw container (bridge
+  network, no env file, no project) with the agent dir set to `EXT_AGENT_DIR`;
+  `build_standard_volume_args` mounts that directory's `settings.json`, `npm/` and
+  `git/` ro over the agent's own once something is installed (never for
+  `--untrusted`); `entrypoint.sh` checks the settings' security keys.
 - `test_seam VAR` — variables that execute commands are honored only with
   `PI_DOCKERIZED_TEST=1`.
 - `check_pi_state` / `sync_pi_state` — validate/repair host state (`config sync`).
@@ -251,8 +262,10 @@ reports unknown settings, invalid values and stray lines with their line number.
   (`WRAPPER_VERSION`, `VCS_REF`) last so they do not invalidate earlier layers.
 - Clean apt caches in the same `RUN` layer; Docker CLI only (never the daemon).
 - No privilege escalation: no `sudo` binary/sudoers; run as non-root `coder`.
-- Baked resources are locked with `chmod -R a-w` (extensions, prompts, themes, settings, AGENTS.md, mcp.json). Packages added
-  to `install-extensions` land under the agent dir: lock that path too.
+- Baked resources are locked with `chmod -R a-w` (the guard, prompts, themes,
+  settings, AGENTS.md, mcp.json). Do not install Pi Packages at build time: they
+  are host-managed (`EXT_AGENT_DIR`, installed with the official `pi install`,
+  mounted ro).
 - Cache-busting `ARG PI_BUILD_TIME` only used by `update`, not regular `build`.
 - Images are tagged by `build`/`pull` through `promote_image` (candidate →
   smoke test → `latest`, old one kept as `:previous`); never `docker tag latest`
@@ -286,6 +299,7 @@ reports unknown settings, invalid values and stray lines with their line number.
 | `$PROJECT_DIR` | `$PROJECT_DIR` (`$HOME` stripped) | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
+| `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages (only after the first install; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |

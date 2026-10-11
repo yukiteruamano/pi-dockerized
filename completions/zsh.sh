@@ -13,7 +13,7 @@ _pi_dockerized() {
         'auth:Check provider credentials (from setting.env_file)'
         'models:List models available to the configured providers'
         'mcp:Manage MCP servers (list|login|logout)'
-        'extensions:List installed extensions (install is build-time only)'
+        'extensions:Host-managed extensions (list|install|remove|update|path|edit)'
         'stats:Show session usage statistics (best-effort)'
         'doctor:Diagnose guard, config, credentials, SSH/GPG forwarding'
         'audit:Review the tool calls the guard blocked'
@@ -61,7 +61,7 @@ _pi_dockerized() {
                     _values 'mcp subcommand' list login logout
                     ;;
                 extensions|plugin)
-                    _values 'extensions subcommand' list
+                    _values 'extensions subcommand' list install remove update path edit
                     ;;
                 audit)
                     _values 'audit option' -n --summary --clear

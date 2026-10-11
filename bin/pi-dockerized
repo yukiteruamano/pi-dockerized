@@ -48,7 +48,7 @@ fi
 
 # Shared configuration, logging (print_*) and command modules.
 source "$REPO_ROOT/lib/config-lib.sh"
-for _cmd_module in help session image update config; do
+for _cmd_module in help session extensions image update config; do
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/cmd/$_cmd_module.sh"
 done

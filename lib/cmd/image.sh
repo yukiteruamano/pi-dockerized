@@ -44,6 +44,13 @@ v=$(pi --version 2>&1 | tail -n 1)
 if [ -z "$v" ] || [ "$v" = "0.0.0" ]; then echo "pi reports version [$v]"; exit 1; fi
 node /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs || exit 1
 test -x /usr/local/lib/pi-dockerized/doctor.sh || { echo "doctor.sh is missing"; exit 1; }
+test -x /usr/local/lib/pi-dockerized/ext-install.sh && test -f /usr/local/lib/pi-dockerized/ext-agent.mjs || { echo "ext-install.sh/ext-agent.mjs missing"; exit 1; }
+# The official Pi must read a seeded ext-agent directory, and the seed must keep
+# the sandbox keys: this is what `extensions install` and every session rely on.
+d=$(mktemp -d)
+node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d" >/dev/null || { echo "ext-agent seed failed"; exit 1; }
+node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$d/settings.json" || exit 1
+PI_CODING_AGENT_DIR="$d" pi list >/dev/null 2>&1 || { echo "pi list fails on a seeded ext-agent directory"; exit 1; }
 echo "$v"
 '
 

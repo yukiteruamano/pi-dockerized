@@ -39,6 +39,9 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Writable locations are the project directory and `/tmp/pi`. Any other path
   (`~/.config`, `/etc`, `/tmp` outside that folder, …) is denied. Change the
   wrapper config from the host (e.g. `pi-dockerized config edit`).
+- Pi Packages are installed on the host by the user and mounted read-only: you
+  cannot add, change or remove them (`pi install`/`pi remove` are blocked). If
+  one is needed, tell the user to run `pi-dockerized extensions install <source>`.
 - Never write `.git/hooks/*`, `.git/config`, `.gitmodules`, or set
   `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.editor`,
   `credential.helper` or `gpg.program`: Git runs them on the host.

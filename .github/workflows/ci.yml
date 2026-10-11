@@ -71,13 +71,16 @@ jobs:
 
       - name: Guard syntax
         run: |
-          for f in extensions/pi-security-guard/*.mjs; do node --check "$f"; done
+          for f in extensions/pi-security-guard/*.mjs container/*.mjs; do node --check "$f"; done
 
       - name: Policy regression tests
         run: node tests/security-guard.test.mjs
 
       - name: Extension wiring and self-test
         run: node tests/guard-extension.test.mjs
+
+      - name: Pi Packages settings guard
+        run: node tests/ext-agent.test.mjs
 
   guard-version:
     name: Guard version bump

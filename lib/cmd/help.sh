@@ -18,7 +18,7 @@ Commands:
     auth                Check provider credentials (from setting.env_file)
     models [DIR]        List models available to the configured providers
     mcp [ARGS]          Manage MCP servers (list|login|logout; add/remove are host-only)
-    extensions [ARGS]   List installed extensions (install is build-time only)
+    extensions CMD      Pi Packages via the official pi install: list|install|remove|update|path|edit
     stats               Show session usage statistics (best-effort)
     doctor              Diagnose guard, config, credentials, SSH/GPG forwarding
     audit [-n N|--summary|--clear]  Review the tool calls the guard blocked
@@ -75,8 +75,8 @@ Getting Started:
 
 Security Features:
     - Isolated environment: only access to mounted project directory
-    - Extensions/settings baked read-only into the image at build time
-      (edit install-extensions, then rebuild to change them)
+    - Settings and the security guard baked read-only into the image; Pi Packages
+      (extensions) live on the host (kept across rebuilds), mounted read-only
     - MCP servers (mcp.json) and the security guard are enforced read-only
     - Persistent state: Pi skills, sessions, auth and MCP OAuth live on the
       host under ~/.config/pi-dockerized/home/ and survive rebuilds

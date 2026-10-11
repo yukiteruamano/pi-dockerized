@@ -68,7 +68,7 @@ _pi_dockerized() {
             return 0
             ;;
         extensions|plugin)
-            mapfile -t COMPREPLY < <(compgen -W "list" -- "${cur}")
+            mapfile -t COMPREPLY < <(compgen -W "list install remove update path edit" -- "${cur}")
             return 0
             ;;
         pi|allow)

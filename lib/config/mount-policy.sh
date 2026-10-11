@@ -23,7 +23,8 @@ CONTAINER_SHADOW_PATHS=(
 # Container paths a custom mount must not target at or below: the baked tooling
 # (guard, settings) and the wrapper's own state mounts.
 CONTAINER_INTERNAL_PATHS=(
-    /home/coder/.pi/agent /home/coder/.nvm /home/coder/.local /usr/local/bin
+    /home/coder/.pi/agent /home/coder/.pi/ext-agent /home/coder/.nvm /home/coder/.local
+    /usr/local/bin
     /usr/local/lib/pi-dockerized
 )
 

@@ -51,6 +51,27 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   (`--verify` / `setting.verify_updates`); it keeps the pinned Pi release unless
   `--pi-version` is given.
 
+### Changed (breaking): extensions are host-managed
+
+- Extensions are no longer installed at image build time and `install-extensions`
+  is gone. Only Pi Packages installed with the official `pi install` are
+  supported (no custom or hand-written extensions, no local paths). They live on
+  the host in `home/.pi/ext-agent/` (Pi's `settings.json`, `npm/`, `git/`),
+  survive rebuilds, and sessions mount them read-only over the agent's own once
+  something is installed (never for `--untrusted`). The guard stays baked.
+- `pi-dockerized extensions list|install|remove|update|path|edit` run the real
+  `pi list|install|remove|update` in a throwaway container (bridge network,
+  read-write ext-agent dir, no secrets file, no project, npm install scripts off
+  unless `--allow-scripts`) through the baked `container/ext-install.sh`.
+- Since Pi writes the `settings.json` sessions then use, `container/ext-agent.mjs`
+  seeds it from the image's defaults, reapplies the security keys
+  (`defaultProjectTrust`, `sessionDir`, `defaultTools`, `enableInstallTelemetry`)
+  after every Pi command, and `entrypoint.sh` refuses to start a session whose
+  settings loosen them. The image smoke test checks that the official `pi list`
+  reads a seeded ext-agent directory.
+- To migrate: run `pi-dockerized extensions install <source>` for each line you
+  had in `install-extensions`.
+
 ### Added
 
 - Commands: `shell`, `ps`, `stop`, `audit`, `pull`, `rollback`, `uninstall`,

@@ -167,10 +167,13 @@ RUN mkdir -p /home/coder/.pi/agent/extensions \
     printf '{}\n' > /home/coder/.pi/agent/trust.json && \
     : > /home/coder/.pi/agent/mcp.log
 
-# Seed the baked settings (security defaults) and the guard before installing
-# extensions (so `pi install` appends its package declarations to settings.json).
+# Seed the baked settings (security defaults) and the guard. Pi Packages are NOT
+# installed here: `pi-dockerized extensions install` runs the official
+# `pi install` in a throwaway container against a host directory (ext-agent/),
+# which sessions mount read-only over the agent's settings.json, npm/ and git/.
+# Installing at build time meant re-fetching them on every rebuild.
 # COPY creates root-owned files regardless of USER, so this block runs as root
-# and fixes ownership; the install/lock steps below run as coder again.
+# and fixes ownership; the lock step below runs as coder again.
 USER root
 COPY container/settings.base.json /home/coder/.pi/agent/settings.json
 COPY container/AGENTS.md /home/coder/.pi/agent/AGENTS.md
@@ -180,28 +183,16 @@ COPY policies/unsafe-tool-patterns.json \
      policies/allow-patterns.json \
      policies/VERSION \
      /home/coder/.pi/agent/extensions/pi-security-guard/policies/
-# Diagnostics run by `pi-dockerized doctor` / `auth`: root-owned, so the session
-# cannot edit them (the executable bit is set in git).
-COPY container/doctor.sh container/auth-check.sh /usr/local/lib/pi-dockerized/
-COPY install-extensions /tmp/install-extensions
+# Diagnostics run by `pi-dockerized doctor` / `auth`, the `pi install` wrapper
+# and settings guard used by `pi-dockerized extensions`, and a reference copy of
+# the baked settings (the agent's own settings.json can be shadowed by the host's
+# ext-agent one): root-owned, so the session cannot edit them (the executable
+# bit of the scripts is set in git).
+COPY container/doctor.sh container/auth-check.sh container/ext-install.sh container/ext-agent.mjs /usr/local/lib/pi-dockerized/
+COPY container/settings.base.json /usr/local/lib/pi-dockerized/settings.base.json
 RUN chown -R coder:coder /home/coder/.pi /home/coder/.npm /home/coder/.cache && \
     chmod -R g+rwX /home/coder/.pi /home/coder/.npm /home/coder/.cache
 USER coder
-
-# Install the extensions/packages listed in install-extensions. pi install
-# writes the declarations to settings.json and fetches the packages. `pi list`
-# fails the build if a package did not reconcile.
-RUN set -euo pipefail; \
-    . "$NVM_DIR/nvm.sh"; \
-    if grep -qvE '^[[:space:]]*(#|$)' /tmp/install-extensions; then \
-      grep -vE '^[[:space:]]*(#|$)' /tmp/install-extensions | while IFS= read -r src; do \
-        echo "Installing Pi extension: $src"; \
-        pi install "$src"; \
-      done; \
-    else \
-      echo "install-extensions: no packages listed (only the built-in guard)"; \
-    fi; \
-    pi list
 
 # Lock the baked *resources* read-only. The runtime user joins the image's
 # `coder` group (via --group-add), so removing write bits makes extensions,

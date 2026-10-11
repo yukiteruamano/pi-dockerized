@@ -62,6 +62,29 @@ else
     note "baked agent files: read-only"
 fi
 
+echo "== pi packages =="
+# The settings in effect keep the sandbox's security keys, whether they are the
+# baked ones or the host's ext-agent file (the entrypoint enforces the same).
+if check_out=$(node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$agent/settings.json" 2>&1); then
+    note "settings security keys: intact"
+else
+    note "settings security keys: BROKEN"
+    printf "%s\n" "$check_out"
+    status=1
+fi
+if [ -d "$agent/npm" ] || [ -d "$agent/git" ]; then
+    note "host packages: mounted"
+    if [ -w "$agent/npm" ] || [ -w "$agent/git" ] || [ -w "$agent/settings.json" ]; then
+        note "host packages: WRITABLE (expected read-only)"
+        status=1
+    else
+        note "host packages: read-only"
+    fi
+else
+    note "host packages: none mounted (nothing installed, or an --untrusted session)"
+fi
+pi list 2>&1 || true
+
 echo "== credentials =="
 for v in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY; do
     if [ -n "${!v:-}" ]; then note "$v: present"; fi

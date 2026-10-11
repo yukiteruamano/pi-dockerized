@@ -50,6 +50,8 @@ mkdir -p "$HOME" "$PROJECT"
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/config-lib.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/cmd/extensions.sh"
 ensure_pi_dirs
 
 # --- Output hygiene -----------------------------------------------------------------
@@ -368,6 +370,101 @@ assert_contains "$out" "cosign is required" "pull explains why it refused"
 : >"$FAKE_DOCKER_LOG"
 bin pull v0.16.0 --no-verify >/dev/null 2>&1 || fail "pull --no-verify"
 assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pull ghcr.io/yukiteruamano/pi-dockerized:v0.16.0" "pull fetches the requested tag"
+
+# --- Pi Packages (extensions) -----------------------------------------------------------------------------
+[ -d "$EXT_AGENT_DIR" ] || fail "the ext-agent directory must be created"
+[ ! -e "$EXT_AGENT_DIR/settings.json" ] || fail "settings.json is seeded inside the image, never on the host"
+if command -v node >/dev/null 2>&1; then
+    node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if("packages" in s) process.exit(1)' \
+        "$REPO_DIR/container/settings.base.json" || fail "the baked settings must not declare packages"
+fi
+
+# Until something is installed, sessions keep the baked settings.
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "ext-agent" "nothing is mounted before the first install"
+assert_not_contains " ${VOLUME_ARGS[*]} " "/home/coder/.pi/agent/settings.json" "the baked settings stay when nothing is installed"
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "extensions=off" "no packages: extensions off"
+
+# After an install the three paths Pi uses are mounted over the agent's own, read-only.
+mkdir -p "$EXT_AGENT_DIR/npm" "$EXT_AGENT_DIR/git"
+printf '{"packages":["npm:x"]}\n' >"$EXT_AGENT_DIR/settings.json"
+build_standard_volume_args "$PROJECT" false
+vols=" ${VOLUME_ARGS[*]} "
+assert_contains "$vols" "$EXT_AGENT_DIR/settings.json:/home/coder/.pi/agent/settings.json:ro" "host settings.json mounted read-only"
+assert_contains "$vols" "$EXT_AGENT_DIR/npm:/home/coder/.pi/agent/npm:ro" "npm/ mounted read-only"
+assert_contains "$vols" "$EXT_AGENT_DIR/git:/home/coder/.pi/agent/git:ro" "git/ mounted read-only"
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "extensions=on" "installed packages: extensions on"
+rmdir "$EXT_AGENT_DIR/git"
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "agent/git" "an absent git/ is not mounted"
+mkdir -p "$EXT_AGENT_DIR/git"
+
+SESSION_UNTRUSTED=true
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "ext-agent" "--untrusted sessions load no host packages"
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "extensions=off" "--untrusted: extensions off"
+SESSION_UNTRUSTED=false
+
+if command -v node >/dev/null 2>&1; then
+    printf '{ nope' >"$EXT_AGENT_DIR/settings.json"
+    (build_standard_volume_args "$PROJECT" false >/dev/null 2>&1) && fail "a broken ext-agent settings.json must stop the session"
+fi
+printf '{"packages":["npm:x"]}\n' >"$EXT_AGENT_DIR/settings.json"
+
+validate_container_path /home/coder/.pi/agent/npm/x "x" internal >/dev/null 2>&1 && fail "a custom mount inside the agent dir must be refused"
+validate_container_path /home/coder/.pi/ext-agent/x "x" internal >/dev/null 2>&1 && fail "a custom mount inside ext-agent must be refused"
+
+# Package sources: what `pi install` takes, nothing that could be an option or a local path.
+for ok in "npm:@scope/pkg@1.2.3" "npm:pkg" "git:github.com/o/r@v1.0.0" "https://github.com/o/r"; do
+    validate_ext_source "$ok" >/dev/null 2>&1 || fail "package source must be accepted: $ok"
+done
+# shellcheck disable=SC2088 # a literal tilde is the point: it must be rejected, not expanded
+for bad in "" "pkg" "./local" "/abs/path" '~/x' "-l" "--local" "npm:-g" "npm:--foo" "npm:a b" 'npm:a;b' 'npm:$(id)' "git:" "npm:" "file:///x" "http://insecure/x" "npm:a|b"; do
+    validate_ext_source "$bad" >/dev/null 2>&1 && fail "package source must be rejected: '$bad'"
+done
+
+# `extensions` command: the official `pi` in a throwaway container.
+out="$(DRY_RUN=true bin extensions install npm:@scope/pkg@1.0.0 2>&1)" || fail "extensions install dry-run"
+assert_contains "$out" "$EXT_AGENT_DIR:/home/coder/.pi/ext-agent:rw" "the installer mounts ext-agent read-write"
+assert_contains "$out" "/usr/local/lib/pi-dockerized/ext-install.sh" "the installer runs the baked wrapper around pi"
+assert_contains "$out" "npm:@scope/pkg@1.0.0" "the source reaches pi install"
+assert_contains "$out" "npm_config_ignore_scripts=true" "install scripts are skipped by default"
+assert_not_contains "$out" "--env-file" "the installer must not receive the secrets file"
+assert_not_contains "$out" "/home/coder/.pi/agent/auth.json" "the installer must not mount session state"
+assert_contains "$out" "bridge" "the installer runs on the bridge network, not the host's"
+last_agent_dir="$(printf '%s\n' "$out" | grep 'PI_CODING_AGENT_DIR=' | tail -1)"
+assert_eq "$last_agent_dir" "PI_CODING_AGENT_DIR=/home/coder/.pi/ext-agent" "the installer's agent dir wins over the common one"
+out="$(DRY_RUN=true bin extensions install npm:pkg --allow-scripts 2>&1)" || fail "extensions install --allow-scripts"
+assert_not_contains "$out" "npm_config_ignore_scripts" "--allow-scripts lets install scripts run"
+assert_not_contains "$out" "--allow-scripts
+" "--allow-scripts is not passed on to pi"
+out="$(DRY_RUN=true bin extensions list 2>&1)" || fail "extensions list dry-run"
+assert_contains "$out" "ext-install.sh" "list goes through the same container"
+out="$(DRY_RUN=true bin extensions 2>&1)" || fail "bare extensions lists"
+assert_contains "$out" "ext-install.sh" "bare extensions defaults to list"
+out="$(DRY_RUN=true bin extensions remove npm:pkg 2>&1)" || fail "extensions remove dry-run"
+assert_contains "$out" "remove" "remove reaches pi"
+out="$(DRY_RUN=true bin extensions update 2>&1)" || fail "extensions update dry-run"
+assert_contains "$out" "--extensions" "update without a source reconciles all packages"
+out="$(DRY_RUN=true bin extensions update npm:pkg 2>&1)" || fail "extensions update SRC dry-run"
+assert_contains "$out" "npm:pkg" "update with a source targets it"
+for bad_cmd in "install" "install npm:a npm:b" "install ./local" "install -l" "remove" "remove npm:a --allow-scripts" "update npm:a npm:b" "list extra" "frobnicate"; do
+    # shellcheck disable=SC2086 # word splitting of the arguments is intended
+    DRY_RUN=true bin extensions $bad_cmd >/dev/null 2>&1 && fail "extensions $bad_cmd must fail"
+done
+assert_eq "$(bin extensions path 2>&1)" "$EXT_AGENT_DIR" "extensions path prints the host directory"
+rm -f "$EXT_AGENT_DIR/settings.json"
+bin extensions edit >/dev/null 2>&1 && fail "extensions edit needs an installed package first"
+out="$(DRY_RUN=true bin run "$PROJECT" 2>&1)"
+assert_contains "$out" "extensions=off" "run reports extensions off before any install"
+printf '{"packages":["npm:x"]}\n' >"$EXT_AGENT_DIR/settings.json"
+out="$(DRY_RUN=true bin run "$PROJECT" 2>&1)"
+assert_contains "$out" "extensions=on" "run reports extensions on after an install"
+assert_contains "$out" "$EXT_AGENT_DIR/settings.json:/home/coder/.pi/agent/settings.json:ro" "run mounts the host settings"
+rm -f "$EXT_AGENT_DIR/settings.json"
 
 # --- Audit ---------------------------------------------------------------------------------------------
 printf '%s\n' \

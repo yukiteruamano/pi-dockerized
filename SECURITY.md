@@ -19,7 +19,7 @@ baked security extension (`extensions/pi-security-guard/`).
 | Control | How |
 |---------|-----|
 | Non-root execution | Image has no `sudo` (no binary, no sudoers); the wrapper starts the container with `--user <host uid>:<host gid>`, `--cap-drop=ALL` and `--security-opt no-new-privileges:true`. `entrypoint.sh` performs no privilege changes |
-| Immutable extensions | Extensions/packages are installed at image build time (`install-extensions`) and locked read-only together with `settings.json`, `AGENTS.md`, `mcp.json`, prompts and themes; the agent cannot add, remove or update them. `skills/` is mounted read-only from the host. The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
+| Immutable guard and extensions | The guard is baked into the image and locked read-only together with `settings.json`, `AGENTS.md`, prompts and themes. Pi Packages are installed on the host with the official `pi install` (`pi-dockerized extensions`) and mounted read-only (`settings.json`, `npm/`, `git/`), so the agent cannot add, remove or update them; `mcp.json` and `skills/` are likewise mounted read-only from the host. The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
 | Read-only MCP config | `mcp.json` is mounted **read-only** from the host; only OAuth tokens (`mcp-auth.json`) and `trust.json` are writable |
 | Project-only writes | Only the project directory and `/tmp/pi` are writable (enforced by the guard, resolving symlinks via `realpath` so a link inside the project cannot escape) |
 | Secret reads | The guard refuses reads of `.env` (except `.env.example`), `*.pem`, `*.key`, key-like names, `auth.json`, `mcp-auth.json`, `trust.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, `~/.aws/`, `~/.kube/`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, SSH keys and `private-keys-v1.d/` — via both the file tools and shell commands. Each input value is tested on its own, so a trailing parameter cannot hide a target |
@@ -65,8 +65,24 @@ baked security extension (`extensions/pi-security-guard/`).
 - **GPG socket relay.** Setups that cannot bind a socket under `/run/user/<uid>/
   gnupg` relay the restricted `S.gpg-agent.extra` through a socket on a normal
   filesystem (`socat`, under the wrapper config dir) for the session.
-- **Baked extensions require a rebuild to change.** Editing `install-extensions`
-  or the guard has no effect until `pi-dockerized build` (or `update`).
+- **The guard is baked; extensions are not.** Editing the guard has no effect
+  until `pi-dockerized build` (or `update`). Extensions live on the host and
+  apply to the next session, no rebuild.
+- **Pi Packages are trusted code.** They run inside Pi with the session's full
+  permissions, including the provider keys in its environment, and can register
+  handlers alongside the guard's; a malicious or compromised one can defeat the
+  guard. They are mounted read-only, so a *session* cannot add or alter them,
+  but nothing vets what you install: pin versions, review sources, prefer few.
+  `extensions install` runs the official `pi install` in a throwaway container
+  with no secrets, project or session state, on the bridge network, and npm
+  install scripts are off by default (`--allow-scripts` opts in). `--untrusted`
+  sessions load none.
+- **The packages' `settings.json` is Pi-written and host-editable.** Sessions
+  mount it in place of the baked one, so its security keys
+  (`defaultProjectTrust`, `sessionDir`, `defaultTools`, `enableInstallTelemetry`)
+  are seeded from the image, reapplied after every Pi command and checked by
+  `entrypoint.sh` before every session (fail closed). Everything else in it
+  (packages, theme, model, ...) is yours.
 - **Skills are read-only.** `skills/` is mounted read-only from the host, so a
   session cannot add or change skills (which instruct the model). Edit them on
   the host and review what you install.

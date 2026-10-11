@@ -284,6 +284,9 @@ print_session_exposure() {
     local summary
     summary="network=$NETWORK policy=$SECURITY_POLICY ssh-agent=$(_onoff "$SSH_AGENT_SUPPORT")"
     summary="$summary gpg-agent=$(_onoff "$GPG_AGENT_SUPPORT") docker-socket=$(_onoff "$DOCKER_SOCKET")"
+    local ext=false
+    if [ -f "$EXT_AGENT_DIR/settings.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then ext=true; fi
+    summary="$summary extensions=$(_onoff "$ext")"
     summary="$summary mounts=${#CUSTOM_MOUNTS[@]} env-file=$env_file"
     [ -n "$PI_PROFILE" ] && summary="profile=$PI_PROFILE $summary"
     [ "$SESSION_UNTRUSTED" = true ] && summary="untrusted $summary"

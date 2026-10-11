@@ -283,7 +283,7 @@ config_readonly_guard() {
     local what="${1:-changes}"
     print_error "The Pi agent config is baked read-only into the image; '$what' is not available from here."
     print_info "MCP servers: edit on the host with '$0 config pi edit' (mcp.json)."
-    print_info "Extensions: add to install-extensions and rebuild ('$0 build')."
+    print_info "Extensions: host-managed; use '$0 extensions install|remove|edit'."
 }
 
 # Function to manage MCP servers (list, login, logout)
@@ -299,20 +299,6 @@ manage_mcp() {
         ;;
     esac
     run_cli_command mcp "" never pi mcp "$subcommand" "$@"
-}
-
-# Function to list installed extensions/packages (read-only).
-manage_extensions() {
-    local subcommand="${1:-list}"
-    shift || true
-    # Extensions are installed at image build time (see install-extensions).
-    case "$subcommand" in
-    add | install | remove | rm | update)
-        config_readonly_guard "pi $subcommand"
-        exit 1
-        ;;
-    esac
-    run_cli_command extensions "" never pi list "$@"
 }
 
 # Names of the running pi-dockerized containers, one per line.

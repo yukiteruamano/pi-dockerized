@@ -47,6 +47,12 @@ ensure_pi_state() {
         printf '{\n  "mcpServers": {}\n}\n' >"$agent/mcp.json" 2>/dev/null || true
     fi
 
+    # Pi Packages live in this directory (the agent dir of the installer
+    # container). Only the directory is created here: settings.json is seeded
+    # inside the image, from its baked defaults, by the first
+    # `pi-dockerized extensions install`.
+    mkdir -p "$EXT_AGENT_DIR" 2>/dev/null || true
+
     # Runtime state Pi writes into the agent directory; bind-mounted read-write.
     # Created up front so a bind never fails on a missing source. The JSON files
     # are seeded as empty objects; an empty/zero-byte file (from an older run)
@@ -204,6 +210,19 @@ check_pi_state() {
             stale=true
         fi
     done
+
+    # The Pi Packages settings, once something was installed, must parse: Pi
+    # reads it and the entrypoint checks its security keys at every start.
+    if [ -f "$EXT_AGENT_DIR/settings.json" ]; then
+        local ev=0
+        json_valid "$EXT_AGENT_DIR/settings.json" || ev=$?
+        if [ "$ev" -eq 1 ]; then
+            config_warning "ext-agent/settings.json is not valid JSON (fix it; sessions will refuse to start)"
+            stale=true
+        else
+            config_success "ext-agent/settings.json present (in sync)"
+        fi
+    fi
 
     # The optional host allow rules must parse: the guard would otherwise warn
     # and ignore them, and the wrapper refuses to start with a broken file.
