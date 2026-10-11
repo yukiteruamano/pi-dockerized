@@ -7,22 +7,24 @@ on:
 permissions:
   contents: read
 
+# Actions are pinned by commit SHA (the tag is in the trailing comment); Renovate
+# keeps them current. Never reference a mutable tag here.
 jobs:
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Syntax check
         run: |
-          bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh
-          for f in lib/*.sh lib/config/*.sh completions/*.sh; do
+          bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh entrypoint.sh
+          for f in lib/*.sh lib/*/*.sh completions/*.sh scripts/*.sh container/*.sh tests/*.sh; do
             bash -n "$f"
           done
 
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           scandir: .
         env:
@@ -30,6 +32,9 @@ jobs:
 
       - name: Wrapper args test
         run: bash tests/wrapper-args.test.sh
+
+      - name: Wrapper commands test
+        run: bash tests/wrapper-commands.test.sh
 
       - name: Config sync round-trip (ephemeral HOME, no Docker)
         run: |
@@ -43,26 +48,65 @@ jobs:
     name: Dockerfile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
 
   policy:
-    name: Security policy
+    name: Security guard
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
 
       - name: Guard syntax
-        run: node --check extensions/pi-security-guard/policy.mjs
+        run: |
+          for f in extensions/pi-security-guard/*.mjs; do node --check "$f"; done
 
       - name: Policy regression tests
         run: node tests/security-guard.test.mjs
+
+      - name: Extension wiring and self-test
+        run: node tests/guard-extension.test.mjs
+
+  guard-version:
+    name: Guard version bump
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      # Changing the guard or the pattern sets changes behavior, which must be
+      # visible in `pi-dockerized version`: GUARD_VERSION has to move with it.
+      - name: GUARD_VERSION changed with the guard
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base="origin/${BASE_REF}"
+          changed="$(git diff --name-only "$base"...HEAD -- extensions/pi-security-guard policies \
+            | grep -v -E '(^|/)(README\.md|LICENSE[^/]*)$' || true)"
+          if [ -z "$changed" ]; then
+            echo "Guard and policies untouched."
+            exit 0
+          fi
+          echo "Guard/policy files changed:"
+          echo "$changed"
+          if git diff "$base"...HEAD -- extensions/pi-security-guard/policy.mjs \
+            | grep -qE '^[+-]export const GUARD_VERSION'; then
+            echo "GUARD_VERSION was bumped."
+          else
+            echo "::error::The guard or policies changed but GUARD_VERSION in extensions/pi-security-guard/policy.mjs was not bumped."
+            exit 1
+          fi

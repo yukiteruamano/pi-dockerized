@@ -7,36 +7,52 @@ Shell script-based Docker wrapper for running [Pi](https://github.com/earendil-w
 so its blast radius is limited to the mounted project directory. Source is Bash
 scripts, a Dockerfile, one TypeScript security extension
 (`extensions/pi-security-guard/`) with dependency-free policy logic
-(`policy.mjs`) and vendored JSON policy data (`policies/`), plus Node/Bash tests.
+(`policy.mjs`, `backstops.mjs`, `shell.mjs`) and vendored JSON policy data
+(`policies/`), plus Node/Bash tests.
 No package manager files and no build step for the wrapper itself.
 
 **Key files:**
-- `bin/pi-dockerized` — Main wrapper, no extension (run, auth, models, exec, mcp,
-  extensions, stats, doctor, install, upgrade, update, build, version, config,
-  clean). Reached via `<install>/bin` on PATH; `bin/` holds only this binary.
+- `bin/pi-dockerized` — Main wrapper, no extension: parses `--profile`, sources
+  the libraries and dispatches (run, exec, shell, auth, models, mcp, extensions,
+  stats, doctor, audit, ps, stop, install, uninstall, upgrade, update, build,
+  pull, rollback, version, config, clean). Reached via `<install>/bin` on PATH;
+  `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/pi-dockerized install`
   when present, else clones to `~/.local/share/pi-dockerized` and runs it there.
 - `lib/config-lib.sh` — Loader for the shared library sourced by other scripts.
   The code lives in `lib/config/`, one responsibility per module: `core.sh`
-  (constants, logging, generic helpers), `state.sh` (host-state seeding/sync),
+  (constants, profiles, logging `print_*`, path helpers), `mount-policy.sh`
+  (what may be mounted and where), `state.sh` (host-state seeding/sync/perms),
   `gpg-ssh.sh` (agent forwarding), `docker-args.sh` (docker run args, incl.
-  `build_pi_args`), `settings.sh` (config file I/O), `parse.sh` (mounts/env
-  args) and `prompts.sh` (interactive setup, output). **Not executable
-  directly.** Keep each module under ~500 lines.
-- `lib/install-lib.sh` — Install wizard library sourced by the wrapper's
-  `install` command. **Not executable directly.**
-- `pi-dockerized.sh`, `setup.sh` (root) — Compat shims forwarding to `bin/`+`lib/`.
-- `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + pnpm + uv +
-  Pi; bakes `container/`, `extensions/` and the packages in `install-extensions`).
-- `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads
-  NVM, sets `PI_CODING_AGENT_DIR`, execs the command).
+  `build_pi_args`), `settings.sh` (config file I/O, `config get/set`),
+  `parse.sh` (mounts/env args), `overrides.sh` (`--untrusted`/`--policy`/
+  `--network` session flags) and `prompts.sh` (interactive setup, output).
+  **Not executable directly.** Keep each module under ~500 lines.
+- `lib/cmd/` — Command modules sourced by the wrapper: `session.sh` (run/exec/
+  shell/auth/doctor/…: `prepare_session` → `build_session_cmd` →
+  `launch_session`), `image.sh` (build/pull/rollback/clean/version), `update.sh`,
+  `config.sh` (config + audit) and `help.sh`. **Not executable directly.**
+- `lib/install-lib.sh` + `lib/install/` — Install/uninstall wizard sourced by the
+  wrapper (`rc.sh`, `sections.sh`, `uninstall.sh`). **Not executable directly.**
+- `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` (root) — Deprecated compat
+  shims, removed in v1.0.
+- `Dockerfile` — Container image (digest-pinned Debian trixie-slim + Node.js/NVM +
+  pnpm + uv + Pi + qmd; bakes `container/`, `extensions/` and the packages in
+  `install-extensions`).
+- `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, runs the
+  guard self-test, sets `PI_CODING_AGENT_DIR`, execs the command).
 - `container/settings.base.json`, `container/AGENTS.md` — Baked Pi config/agents
-  rules (copied into the image's agent dir).
+  rules (copied into the image's agent dir). `container/doctor.sh`,
+  `container/auth-check.sh` — in-container diagnostics (baked root-owned).
 - `install-extensions` — Build-time manifest of `pi install` sources.
 - `extensions/pi-security-guard/` — Security extension (`index.ts`,
-  `policy.mjs`, `policies/`).
-- `policies/` — Vendored `opencode-policy` pattern sets (source for the guard).
-- `tests/` — `security-guard.test.mjs`, `wrapper-args.test.sh`.
+  `policy.mjs`, `backstops.mjs`, `shell.mjs`, `selftest.mjs`,
+  `balanced-excluded.json`, `policies/`).
+- `policies/` — Vendored `opencode-policy` pattern sets (source for the guard);
+  `scripts/refresh-policies.sh` refreshes them.
+- `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
+  `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
+- `CHANGELOG.md` — Release notes; `renovate.json` — dependency updates.
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide.
 - `examples/config.example` — Example user config (INI).
 - Completions: `completions/{bash,zsh}.sh`.
@@ -50,27 +66,36 @@ bin/pi-dockerized build                       # Build Docker image (bakes extens
 bin/pi-dockerized run [DIR]                   # Run Pi (default: current dir)
 bin/pi-dockerized auth                        # Check provider credentials
 bin/pi-dockerized upgrade --check             # Check for updates from GitHub
-bin/pi-dockerized update [--check|--yes|--no-build|--pi-version X]
+bin/pi-dockerized update [--check|--yes|--no-build|--verify|--pi-version X]
 pi-dockerized models                          # List models (pi --list-models)
-pi-dockerized exec MSG                        # Non-interactive prompt (pi --print)
+pi-dockerized exec [FLAGS] MSG|-              # Non-interactive prompt (pi --print)
+pi-dockerized shell [FLAGS] [DIR]             # Shell inside the sandbox
 pi-dockerized mcp [ARGS]                      # MCP servers (default: list)
 pi-dockerized extensions                      # List installed extensions (pi list)
 pi-dockerized stats                           # Session usage statistics
 pi-dockerized doctor                          # Diagnose guard, config, forwarding
-pi-dockerized version                         # Wrapper + guard + Pi versions
-pi-dockerized config show|edit|path|sync      # Wrapper INI config
-pi-dockerized config pi [path|edit]           # mcp.json
-pi-dockerized clean                           # Remove Docker image
+pi-dockerized audit [-n N|--summary|--clear]  # Calls the guard blocked
+pi-dockerized ps | stop NAME|--all            # Running sessions
+pi-dockerized pull [TAG] [--no-verify]        # Prebuilt signed image
+pi-dockerized rollback                        # Previous image back to latest
+pi-dockerized version                         # Wrapper, image, guard, policies, Pi
+pi-dockerized config show|edit|get|set|path|sync|profiles   # Wrapper INI config
+pi-dockerized config pi|allow [path|edit]     # mcp.json / guard allow.json
+pi-dockerized uninstall [--image] [--purge-config]
+pi-dockerized clean                           # Remove Docker image (all tags)
+pi-dockerized --profile NAME <command>        # Separate config/keys/state
 DRY_RUN=true pi-dockerized run                # Print the docker command
 
 # Validation
 bash -n bin/pi-dockerized install.sh entrypoint.sh
-bash -n lib/*.sh lib/config/*.sh completions/*.sh
-shellcheck -x -S warning bin/* lib/*.sh lib/config/*.sh install.sh completions/*.sh
-cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
-node --check extensions/pi-security-guard/policy.mjs
+for f in lib/*.sh lib/*/*.sh completions/*.sh scripts/*.sh container/*.sh tests/*.sh; do bash -n "$f"; done
+shellcheck -x -S warning bin/* lib/*.sh lib/*/*.sh install.sh entrypoint.sh scripts/*.sh container/*.sh completions/*.sh tests/*.sh
+cat Dockerfile | docker run --rm -i hadolint/hadolint:v2.12.0 hadolint -
+for f in extensions/pi-security-guard/*.mjs; do node --check "$f"; done
 node tests/security-guard.test.mjs
+node tests/guard-extension.test.mjs
 bash tests/wrapper-args.test.sh
+bash tests/wrapper-commands.test.sh
 
 # Docker operations
 docker build -t pi-dockerized:latest .
@@ -78,8 +103,12 @@ docker run --rm pi-dockerized:latest pi --version
 ```
 
 CI (`.github/workflows/ci.yml`) runs `bash -n`, `shellcheck`, `hadolint`, the
-policy test and the wrapper contract test. `shellcheck`/`hadolint` are not
-installed in this container — run them via their official images.
+guard tests (Node 22 and 24), both wrapper contract tests and, on pull requests,
+the GUARD_VERSION-bump check. `image.yml` publishes and signs the multi-arch
+image on version tags; `security.yml` runs gitleaks and Trivy. Actions are
+pinned by commit SHA. `shellcheck`/`hadolint` are not installed in this
+container — run them via their official images. Docker is not reachable from
+the agent sandbox, so image changes cannot be built or smoke-tested here.
 
 ## Code Style Guidelines
 
@@ -125,15 +154,12 @@ source "$REPO_ROOT/lib/config-lib.sh"
 
 ### Color Output / Logging
 
-```bash
-print_error()   { echo -e "${RED}✗${NC} $1"; }
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
-print_info()    { echo -e "${BLUE}ℹ${NC} $1"; }
-```
-
-In `lib/config/`, use fallback wrappers that delegate to the caller's
-functions if defined (`config_info` → `print_info`).
+`print_info`, `print_success`, `print_warning` and `print_error` live in
+`lib/config/core.sh` (`config_*` are aliases). They use `printf` (never
+`echo -e`: a path or config value may contain backslashes or escape bytes),
+strip control characters from the text, and send warnings and errors to
+stderr so command output stays pipeable. Color codes are plain variables
+(`RED`, `NC`, …) honoring `NO_COLOR`.
 
 ### Error Handling
 
@@ -149,16 +175,33 @@ functions if defined (`config_info` → `print_info`).
 
 - `PI_HOME` (`~/.config/pi-dockerized/home`) — self-contained host state root
   mirroring the container home; all mounts source from here.
+- `PI_CONFIG_ROOT` / `PI_PROFILE` / `CONFIG_DIR` — the root of all wrapper
+  configs, the active profile (`--profile`) and its directory.
 - `ensure_pi_dirs` / `ensure_pi_state` — create the host agent tree and seed
-  `mcp.json`, `skills/`, `sessions/` and the runtime state files.
+  `mcp.json`, `skills/`, `sessions/`, `audit.log` and the runtime state files;
+  `harden_state_permissions` keeps the tree `0700`/`0600`.
 - `build_standard_volume_args "$project_dir" [docker_socket]` — populates
-  `VOLUME_ARGS` (project rw; `mcp.json` and `skills/` ro; `sessions/`,
-  `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`, `.npm` rw; `~/.claude`
-  and `~/.agents` ro; optional docker socket).
+  `VOLUME_ARGS` (project rw; `mcp.json`, `skills/` and `allow.json` ro;
+  `sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`,
+  `audit.log`, `.npm`, `.cache/qmd` rw; `~/.claude` and `~/.agents` ro; optional
+  docker socket). Returns 1 when the project would shadow a system path.
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` (`--rm`,
   `--network`, `--user`, `--group-add coder`, `--cap-drop=ALL`,
-  `no-new-privileges`, `PI_CODING_AGENT_DIR`, `PI_SKIP_VERSION_CHECK=1`,
-  `PI_TELEMETRY`, `PI_DOCKERIZED_POLICY`).
+  `no-new-privileges`, `--label pi-dockerized=1`, `PI_CODING_AGENT_DIR`,
+  `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY`, `PI_DOCKERIZED_POLICY`,
+  `PI_DOCKERIZED_ALLOWED_TOOLS`, `PI_DOCKERIZED_ALLOW_FILE`,
+  `PI_DOCKERIZED_AUDIT_FILE`).
+- `validate_mount_source` / `validate_container_path` (`mount-policy.sh`) — the
+  only gate for custom mounts and the project mount; extend their lists rather
+  than special-casing in callers.
+- `_setting_spec` (`settings.sh`) — the single definition of every setting; the
+  loader, `config set` and `save_config` all use it. Add new settings there and
+  to `SETTING_KEYS`.
+- `parse_session_flags` / `apply_session_overrides` — per-invocation flags.
+- `prepare_session` → `build_session_cmd` → `launch_session` (`lib/cmd/session.sh`)
+  — every container command goes through these three.
+- `test_seam VAR` — variables that execute commands are honored only with
+  `PI_DOCKERIZED_TEST=1`.
 - `check_pi_state` / `sync_pi_state` — validate/repair host state (`config sync`).
 - GPG/SSH forwarding helpers: `ensure_gpg_mirror`,
   `resolve_gpg_agent_socket`/`_extra_socket`, `start_gpg_relay`/`stop_gpg_relay`.
@@ -172,6 +215,8 @@ setting.gpg_agent_support=false
 setting.docker_socket=false
 setting.network=host
 setting.security_policy=balanced
+setting.allowed_tools=
+setting.verify_updates=false
 setting.memory=4g
 setting.cpus=2
 setting.env_file=~/.config/pi-dockerized/env
@@ -181,37 +226,58 @@ mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
 
 Secrets only travel via `setting.env_file` (dotenv under the config dir,
-`docker --env-file`, never mounted).
+`docker --env-file`, never mounted). The loader reads the file in one pass and
+reports unknown settings, invalid values and stray lines with their line number.
+`config set` / `save_config` edit in place: comments and unknown entries survive.
 
 ### Dockerfile Conventions
 
-- Base image `debian:trixie-slim` (pinned); `SHELL ["/bin/bash", "-o", "pipefail", "-c"]`.
-- Parameterize versions via `ARG`: `NVM_VERSION`, `PNPM_VERSION`, `UV_VERSION`, `PI_VERSION`.
-  `update --pi-version X` overrides the pinned `PI_VERSION` (default `latest`).
-  Never set `PI_PACKAGE_DIR`: Pi reads its own `package.json` from it and would
-  report `0.0.0`; the build fails if `pi --version` is `0.0.0`.
+- Base image `debian:trixie-slim` pinned by digest (Renovate bumps tag+digest);
+  `SHELL ["/bin/bash", "-o", "pipefail", "-c"]`; `# syntax=docker/dockerfile:1`.
+- Parameterize versions via `ARG`: `NVM_VERSION`, `PNPM_VERSION`, `UV_VERSION`,
+  `NODE_VERSION` (major), `PI_VERSION`, `QMD_VERSION`. The nvm/uv/pnpm installer
+  scripts are verified against `*_INSTALL_SHA256` before they run (bump nvm/uv
+  version and checksum together; the pnpm installer is unversioned upstream).
+  `update --pi-version X` overrides the pinned `PI_VERSION`; without it the pin
+  stays. Never set `PI_PACKAGE_DIR`: Pi reads its own `package.json` from it and
+  would report `0.0.0`; the build fails if `pi --version` is `0.0.0`.
 - Install global packages with `pnpm add -g` (pass `--allow-build` when a package
   needs lifecycle scripts); keep `npx` available for `npx`-based MCP servers.
+  The pnpm store is a BuildKit cache mount whose mount point is created as
+  `coder` beforehand (a root-owned one would break `pnpm add` at runtime).
+- `INSTALL_DOCKER_CLI` (set by `build` from `setting.docker_socket`) controls the
+  Docker CLI layer; the `pi-dockerized.docker-cli` and OCI version/revision
+  labels are what the wrapper's drift check reads. Declare volatile ARGs
+  (`WRAPPER_VERSION`, `VCS_REF`) last so they do not invalidate earlier layers.
 - Clean apt caches in the same `RUN` layer; Docker CLI only (never the daemon).
 - No privilege escalation: no `sudo` binary/sudoers; run as non-root `coder`.
 - Baked resources are locked with `chmod -R a-w` (extensions, prompts, themes, settings, AGENTS.md, mcp.json). Packages added
   to `install-extensions` land under the agent dir: lock that path too.
 - Cache-busting `ARG PI_BUILD_TIME` only used by `update`, not regular `build`.
+- Images are tagged by `build`/`pull` through `promote_image` (candidate →
+  smoke test → `latest`, old one kept as `:previous`); never `docker tag latest`
+  from elsewhere.
 
 ### Security Rules
 
 - The agent dir is baked and immutable; only `sessions/` and the runtime
-  state files are bind-mounted read-write; `mcp.json` and `skills/` are mounted
-  read-only. `$CONFIG_DIR` is never mounted.
+  state files (and the audit log) are bind-mounted read-write; `mcp.json`,
+  `skills/` and `allow.json` are mounted read-only. `$CONFIG_DIR` is never
+  mounted, and `validate_mount_source` refuses any custom mount that would
+  expose it, `$HOME`, credential stores or the Docker socket.
 - **Never commit:** `.env`, `auth.json`, `*.pem`, `*.key`, credentials.
 - Docker socket, SSH and GnuPG forwarding are all opt-in and off by default.
 - `setting.security_policy` (`strict|balanced|off`) is passed to the guard as
-  `PI_DOCKERIZED_POLICY`.
-- `extensions/pi-security-guard/index.ts` + `policy.mjs` are the guard source of
-  truth; bump `PI_DOCKERIZED_GUARD_VERSION` when behavior changes.
-- Writes are allowed only inside the project directory and `/tmp/pi`.
-- Prefer `policies/allow-patterns.json` or a policy mode over editing the
-  vendored `policies/*.json`.
+  `PI_DOCKERIZED_POLICY`; `--policy`/`--untrusted` override it per session.
+- `extensions/pi-security-guard/` is the guard source of truth (`policy.mjs`
+  evaluates, `backstops.mjs` holds the deny-lists, `shell.mjs` de-obfuscates,
+  `selftest.mjs` is the fail-closed boot check run by `entrypoint.sh`); bump
+  `GUARD_VERSION` in `policy.mjs` when behavior changes (CI enforces it).
+- Writes are allowed only inside the project directory and `/tmp/pi`, and never
+  to `.git/hooks`, `.git/config` or `.gitmodules` (they run on the host).
+- Prefer a policy mode, `config allow edit` (host `allow.json`) or
+  `policies/allow-patterns.json` over editing the vendored `policies/*.json`;
+  refresh the vendored files with `scripts/refresh-policies.sh`.
 
 ## Volume Mounts Reference
 
@@ -222,7 +288,10 @@ Secrets only travel via `setting.env_file` (dotenv under the config dir,
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
+| `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |
+| `home/.pi/agent/allow.json` | idem | **ro** | Optional host allow rules (absent with `--untrusted`) |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache |
+| `home/.cache/qmd/` | `/home/coder/.cache/qmd/` | rw | qmd index and models |
 | `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
 | `~/.composio/` | idem | rw | Composio CLI (custom mount) |
 | `/var/run/docker.sock` | idem | rw (opt-in) | Docker socket |

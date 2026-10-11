@@ -1,0 +1,105 @@
+name: Publish image
+
+# Builds the image in CI, smoke-tests it, pushes a multi-arch copy to GHCR with
+# provenance and an SBOM, and signs it keyless with cosign. `pi-dockerized pull`
+# verifies that signature before it will use the image.
+#
+# Runs on version tags (v*) and by hand. The published image is built with
+# INSTALL_DOCKER_CLI=false (the safe default); enable setting.docker_socket and
+# run `pi-dockerized build` locally if you need the Docker CLI inside.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/yukiteruamano/pi-dockerized
+
+jobs:
+  publish:
+    name: Build, test, push, sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Resolve the version
+        id: meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # v1.2.3 -> 1.2.3 for the label; manual runs use the wrapper's own version.
+          if [[ "$REF_NAME" == v* ]]; then
+            version="${REF_NAME#v}"
+          else
+            version="$(grep -oE '^WRAPPER_VERSION="[^"]+"' bin/pi-dockerized | cut -d'"' -f2)"
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Smoke test on one architecture before anything is published: Pi reports a
+      # real version and the guard passes its own self-test.
+      - name: Build (amd64) for the smoke test
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: pi-dockerized:smoke
+          build-args: |
+            WRAPPER_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            INSTALL_DOCKER_CLI=false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run --rm --entrypoint bash pi-dockerized:smoke -c '
+            v=$(pi --version 2>&1 | tail -n 1)
+            test -n "$v" && test "$v" != "0.0.0"
+            node /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs
+            test -x /usr/local/lib/pi-dockerized/doctor.sh
+            echo "pi $v"
+          '
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (multi-arch)
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:v${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            WRAPPER_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            INSTALL_DOCKER_CLI=false
+          cache-from: type=gha
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      # Sign the digest, not the tag: the signature stays valid for exactly the
+      # bytes that were built, however the tag moves later.
+      - name: Sign
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

@@ -22,8 +22,20 @@ baked security extension (`extensions/pi-security-guard/`).
 | Immutable extensions | Extensions/packages are installed at image build time (`install-extensions`) and locked read-only together with `settings.json`, `AGENTS.md`, `mcp.json`, prompts and themes; the agent cannot add, remove or update them. `skills/` is mounted read-only from the host. The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
 | Read-only MCP config | `mcp.json` is mounted **read-only** from the host; only OAuth tokens (`mcp-auth.json`) and `trust.json` are writable |
 | Project-only writes | Only the project directory and `/tmp/pi` are writable (enforced by the guard, resolving symlinks via `realpath` so a link inside the project cannot escape) |
-| Secret reads | The guard refuses reads of `.env` (except `.env.example`), `*.pem`, `*.key`, key-like names, `auth.json`, `mcp-auth.json`, `trust.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, SSH keys and `private-keys-v1.d/` — via both the file tools and shell commands |
+| Secret reads | The guard refuses reads of `.env` (except `.env.example`), `*.pem`, `*.key`, key-like names, `auth.json`, `mcp-auth.json`, `trust.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, `~/.aws/`, `~/.kube/`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, SSH keys and `private-keys-v1.d/` — via both the file tools and shell commands. Each input value is tested on its own, so a trailing parameter cannot hide a target |
+| Quoting tricks | Shell commands are also tested de-obfuscated: `''`/`""` pairs, backslash escapes, `${IFS}` and `$'\x2e'`/octal ANSI-C strings are resolved before the patterns run (`cat .e''nv`, `c''at .env`, `ca\t .env`) |
 | Dangerous commands | Guard backstops for `sudo`, `rm -rf /`, `mkfs`, `dd of=/dev/…`, `shutdown`/`reboot`, root mounts and metadata-IP reads |
+| Git host-execution vectors | The project directory is shared with the host, so planting a Git hook is a sandbox escape. `write`/`edit` cannot touch `.git/hooks/**`, `.git/config`, `.git/info/attributes` or `.gitmodules` (symlinks resolved), and shell commands that redirect/copy into them, or set `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.editor`, `core.pager`, `core.askpass`, `credential.helper` or `gpg.program`, are blocked |
+| Bounded evaluation | A single input value over 16 KiB is refused (fail closed). Several patterns are quadratic on long lines (100 KiB took ~50 s), which would stall the guard; at the cap the worst case is ~1.5 s |
+| Unknown tools | `strict` refuses tools the policy does not model (MCP, other extensions) unless listed in `setting.allowed_tools`; `balanced` scans their values with the vendored patterns |
+| Fail closed | `entrypoint.sh` runs the guard's self-test (pattern files present and non-empty, canary calls judged correctly) before every container command and refuses to start otherwise; a policy exception while evaluating a call blocks it |
+| Mount policy | Custom mounts are validated on the literal and the symlink-resolved path: never `$HOME` or a parent, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.config/{gcloud,gh}`, `~/.netrc`, `~/.git-credentials`, the wrapper's config root (secrets file, every profile) or the Docker socket; targets must be absolute, must not hide system paths and must not sit inside the baked agent directory. The project mount gets the same container-path check (`~/etc` would otherwise land on `/etc`). Sources are bound with `--mount`, so a missing path fails or is skipped rather than being created as a root-owned directory |
+| Audit | Every blocked call is appended (tool, rule, truncated and credential-redacted target) to `audit.log`; `pi-dockerized audit` reviews it |
+| Host allow rules | `allow.json` is mounted read-only and only relaxes the vendored patterns, never the backstops; it is not mounted for `--untrusted` sessions |
+| Image integrity | The base image is pinned by digest, the nvm/uv/pnpm installers by SHA-256, Node by major and qmd by version. New images are smoke-tested before they replace the current one (which is kept for `rollback`). Prebuilt images are published from CI with provenance and an SBOM, signed keyless with cosign; `pull` verifies the signature of the digest it actually pulled |
+| Update verification | `update` lists the incoming commits first; `--verify` / `setting.verify_updates=true` requires a valid signature on the upstream head (`git verify-commit`) |
+| Output hygiene | Control characters are stripped from everything the wrapper prints (a directory or config value cannot inject terminal escapes); errors and warnings go to stderr |
+| Private state | The state tree is `0700` and its token files `0600` |
 | Policy patterns | The vendored `opencode-policy` pattern sets, evaluated by `extensions/pi-security-guard/policy.mjs` (see `policies/README.md`) |
 | SSH agent forwarding (opt-in) | `setting.ssh_agent_support=true` forwards only `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys (`id_*`, `*.pem`, `*.key`) are never mounted, and a custom mount of `~/.ssh` is refused |
 | GnuPG agent forwarding (opt-in) | `setting.gpg_agent_support=true` mirrors only the public keyring (`pubring.kbx` / `public-keys.d`) and forwards the host `gpg-agent` socket (preferring the restricted `S.gpg-agent.extra`); `private-keys-v1.d/` is never copied or mounted, and a custom mount of `~/.gnupg` is refused |
@@ -33,7 +45,9 @@ baked security extension (`extensions/pi-security-guard/`).
 
 - **Docker socket is opt-in but root-equivalent.** With
   `setting.docker_socket=true` the container gets the host Docker socket, which
-  allows mounting `/` and escaping to host root. It is **off by default**.
+  allows mounting `/` and escaping to host root. It is **off by default**, and
+  the image only contains the Docker CLI when built with it on. A custom mount
+  of the socket is refused.
 - **`--network host`.** The container shares the host network namespace, so it
   can reach host services and the internet without restrictions.
 - **No read-only root filesystem.** `--cap-drop=ALL` and `no-new-privileges` are
@@ -67,9 +81,19 @@ baked security extension (`extensions/pi-security-guard/`).
 - **Inline secrets in `mcp.json` abort the run.** MCP credentials must use
   `${VAR}` references; literal `apiKey`/`token`/`secret`/`password` values are
   rejected by the wrapper and reported by `doctor`.
-- **Secret reads are heuristic.** An obfuscated command could still reach data
-  that is not mounted at all; the bare `*key` heuristic also blocks unrelated
-  names ending in "key" (e.g. `monkey`).
+- **Secret reads are heuristic.** Quoting and escaping tricks are resolved, but
+  values assembled at run time (`a=.e; b=nv; cat $a$b`), command substitution
+  and `base64 | sh` stagers are out of reach of a regex over the command text;
+  the container boundary has to hold there. The bare `*key` heuristic also
+  blocks unrelated names ending in "key" (e.g. `monkey`).
+- **The audit log is writable by the session.** It is a review aid, not
+  tamper-proof evidence. The same holds for `sessions/`.
+- **Test hooks.** `GPG_AGENT_PROBE_CMD`, `GPG_AGENT_LAUNCH_CMD` and
+  `GPG_RELAY_CMD` run arbitrary commands and are honored only with
+  `PI_DOCKERIZED_TEST=1`.
+- **`--untrusted` is a profile, not a proof.** It tightens policy, network and
+  host access, but the project directory is still mounted read-write and the
+  secrets file (provider keys) still reaches the container environment.
 - **Bare environment dumps are denied.** `env`, `printenv`, `set`, `export`,
   `declare`, `typeset` with no arguments (plus `-p`/`-x`/`compgen -e|-v`) are
   blocked in every mode; scoped uses (`printenv PATH`, `env FOO=1 cmd`,
@@ -87,9 +111,10 @@ baked security extension (`extensions/pi-security-guard/`).
 - **Git exfiltration over key material is denied.** `show`/`cat-file` of key
   paths, `log -p`, non-`--stat` `diff`, `grep` and `archive` over
   `*.key`/`*.pem`/key-like names are blocked; ordinary git metadata is allowed.
-- **Write confinement depends on the guard.** If the guard fails to load, writes
-  fall back to Pi's runtime defaults. The guard is baked read-only, so a session
-  cannot relax it, but it is the enforcement layer.
+- **Write confinement depends on the guard.** The guard is baked read-only, so a
+  session cannot relax it, and the boot self-test stops the container when it is
+  damaged. Shell commands that write outside the project (`> /etc/x`) are not
+  confined by the guard; the image filesystem permissions are what stop them.
 - **Prompt injection is only partly mitigated.** Rules and hooks reduce impact;
   they do not make the agent trustworthy. Review its actions.
 

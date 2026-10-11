@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "dockerfile": {
+    "pinDigests": true
+  },
+  "customManagers": [
+    {
+      "description": "Dockerfile ARGs annotated with a `# renovate:` comment",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\nARG [A-Z_]+_VERSION=(?<currentValue>[^\\s]+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Policy and guard changes need a GUARD_VERSION bump; keep them out of automated grouping",
+      "matchFileNames": ["policies/**", "extensions/**"],
+      "enabled": false
+    }
+  ]
+}
