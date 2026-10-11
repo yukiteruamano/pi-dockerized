@@ -143,14 +143,24 @@ RUN set -euo pipefail; \
     fi; \
     pi list
 
-# Lock the baked resources read-only. The runtime user joins the image's `coder`
-# group (via --group-add), so removing write bits makes extensions, settings,
-# AGENTS.md and the package store immutable to the agent. The writable state
-# paths (skills, sessions, auth, mcp-auth, trust, mcp.log, .npm) are bind-mounted
-# read-write from the host, which Docker applies over these directories.
+# Lock the baked *resources* read-only. The runtime user joins the image's
+# `coder` group (via --group-add), so removing write bits makes extensions,
+# settings, AGENTS.md, prompts, themes and the package store immutable to the
+# agent. The writable state (skills/, sessions/, auth.json, mcp-auth.json,
+# trust.json, mcp.log) is intentionally left writable in the image and is
+# bind-mounted read-write from the host at run time; keeping it writable also
+# means Pi still starts if a state mount is ever missing.
 # Root is needed to strip write bits from the root-owned COPY results.
 USER root
-RUN chmod -R a-w /home/coder/.pi/agent /home/coder/.pi/packages
+RUN chmod -R a-w \
+      /home/coder/.pi/agent/extensions \
+      /home/coder/.pi/agent/prompts \
+      /home/coder/.pi/agent/themes \
+      /home/coder/.pi/packages && \
+    chmod a-w \
+      /home/coder/.pi/agent/settings.json \
+      /home/coder/.pi/agent/AGENTS.md \
+      /home/coder/.pi/agent/mcp.json
 USER coder
 
 # Default working directory; entrypoint.sh cd's into the project (PI_WORKDIR,
