@@ -17,7 +17,7 @@ jobs:
       - name: Syntax check
         run: |
           bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh
-          for f in lib/*.sh completions/*.sh; do
+          for f in lib/*.sh lib/config/*.sh completions/*.sh; do
             bash -n "$f"
           done
 

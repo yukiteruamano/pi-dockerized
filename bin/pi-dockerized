@@ -244,16 +244,6 @@ run_cli_command() {
     trap - EXIT INT TERM
 }
 
-# Build the `pi` invocation args from wrapper settings (theme/model).
-# Usage: build_pi_args <array_name>; appends to the named array.
-build_pi_args() {
-    local -n _out="$1"
-    # `if` (not `[ ] && ...`): an empty setting must not make the function
-    # return 1, which would abort the caller under `set -e`.
-    if [ -n "$THEME" ]; then _out+=(--use-theme "$THEME"); fi
-    if [ -n "$MODEL" ]; then _out+=(--model "$MODEL"); fi
-}
-
 # Function to check provider credentials
 run_auth() {
     print_info "Checking Pi provider credentials..."
