@@ -13,7 +13,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG NVM_VERSION=v0.40.8
 ARG PNPM_VERSION=12.10.1
 # Pi CLI release; override with --build-arg PI_VERSION=x.y.z
-ARG PI_VERSION=latest
+ARG PI_VERSION=v1.1.0
 
 # Install base dependencies and useful CLI tools for coding agents
 RUN apt-get update && apt-get install -y \
@@ -88,7 +88,7 @@ ENV PATH="$PNPM_HOME/bin:$NVM_DIR/default:/home/coder/.local/bin:$PATH"
 
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
-# ARG PI_VERSION pins the release; defaults to latest for regular builds.
+# ARG PI_VERSION pins the release (default v1.1.0).
 ARG PI_BUILD_TIME=0
 RUN pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@earendil-works/pi-coding-agent && pi --version
 
