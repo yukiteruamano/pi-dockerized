@@ -16,9 +16,13 @@ No package manager files and no build step for the wrapper itself.
   clean). Reached via `<install>/bin` on PATH; `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/pi-dockerized install`
   when present, else clones to `~/.local/share/pi-dockerized` and runs it there.
-- `lib/config-lib.sh` — Shared library sourced by other scripts (config parsing,
-  mount/env arg building, host-state seeding, interactive prompts). **Not
-  executable directly.**
+- `lib/config-lib.sh` — Loader for the shared library sourced by other scripts.
+  The code lives in `lib/config/`, one responsibility per module: `core.sh`
+  (constants, logging, generic helpers), `state.sh` (host-state seeding/sync),
+  `gpg-ssh.sh` (agent forwarding), `docker-args.sh` (docker run args, incl.
+  `build_pi_args`), `settings.sh` (config file I/O), `parse.sh` (mounts/env
+  args) and `prompts.sh` (interactive setup, output). **Not executable
+  directly.** Keep each module under ~500 lines.
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's
   `install` command. **Not executable directly.**
 - `pi-dockerized.sh`, `setup.sh` (root) — Compat shims forwarding to `bin/`+`lib/`.
@@ -46,7 +50,7 @@ bin/pi-dockerized build                       # Build Docker image (bakes extens
 bin/pi-dockerized run [DIR]                   # Run Pi (default: current dir)
 bin/pi-dockerized auth                        # Check provider credentials
 bin/pi-dockerized upgrade --check             # Check for updates from GitHub
-bin/pi-dockerized update [--check|--yes|--no-build]
+bin/pi-dockerized update [--check|--yes|--no-build|--pi-version X]
 pi-dockerized models                          # List models (pi --list-models)
 pi-dockerized exec MSG                        # Non-interactive prompt (pi --print)
 pi-dockerized mcp [ARGS]                      # MCP servers (default: list)
@@ -61,8 +65,8 @@ DRY_RUN=true pi-dockerized run                # Print the docker command
 
 # Validation
 bash -n bin/pi-dockerized install.sh entrypoint.sh
-bash -n lib/*.sh completions/*.sh
-shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh
+bash -n lib/*.sh lib/config/*.sh completions/*.sh
+shellcheck -x -S warning bin/* lib/*.sh lib/config/*.sh install.sh completions/*.sh
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
 node --check extensions/pi-security-guard/policy.mjs
 node tests/security-guard.test.mjs
@@ -128,7 +132,7 @@ print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_info()    { echo -e "${BLUE}ℹ${NC} $1"; }
 ```
 
-In `lib/config-lib.sh`, use fallback wrappers that delegate to the caller's
+In `lib/config/`, use fallback wrappers that delegate to the caller's
 functions if defined (`config_info` → `print_info`).
 
 ### Error Handling
@@ -141,7 +145,7 @@ functions if defined (`config_info` → `print_info`).
 - Always use `read -r`.
 - Validate env var names: `[[ "$var_name" =~ ^[A-Z_][A-Z0-9_]*$ ]]`.
 
-### Shared Logic (lib/config-lib.sh)
+### Shared Logic (lib/config/)
 
 - `PI_HOME` (`~/.config/pi-dockerized/home`) — self-contained host state root
   mirroring the container home; all mounts source from here.
@@ -182,12 +186,16 @@ Secrets only travel via `setting.env_file` (dotenv under the config dir,
 ### Dockerfile Conventions
 
 - Base image `debian:trixie-slim` (pinned); `SHELL ["/bin/bash", "-o", "pipefail", "-c"]`.
-- Parameterize versions via `ARG`: `NVM_VERSION`, `PNPM_VERSION`, `PI_VERSION`.
+- Parameterize versions via `ARG`: `NVM_VERSION`, `PNPM_VERSION`, `UV_VERSION`, `PI_VERSION`.
+  `update --pi-version X` overrides the pinned `PI_VERSION` (default `latest`).
+  Never set `PI_PACKAGE_DIR`: Pi reads its own `package.json` from it and would
+  report `0.0.0`; the build fails if `pi --version` is `0.0.0`.
 - Install global packages with `pnpm add -g` (pass `--allow-build` when a package
   needs lifecycle scripts); keep `npx` available for `npx`-based MCP servers.
 - Clean apt caches in the same `RUN` layer; Docker CLI only (never the daemon).
 - No privilege escalation: no `sudo` binary/sudoers; run as non-root `coder`.
-- Baked resources are locked with `chmod -R a-w` (agent dir + Pi package dir).
+- Baked resources are locked with `chmod -R a-w` (extensions, prompts, themes, settings, AGENTS.md, mcp.json). Packages added
+  to `install-extensions` land under the agent dir: lock that path too.
 - Cache-busting `ARG PI_BUILD_TIME` only used by `update`, not regular `build`.
 
 ### Security Rules

@@ -18,12 +18,12 @@ CI runs all of these; you can run them locally:
 ```bash
 # 1. Syntax
 bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh entrypoint.sh
-for f in lib/*.sh completions/*.sh; do bash -n "$f"; done
+for f in lib/*.sh lib/config/*.sh completions/*.sh; do bash -n "$f"; done
 
 # 2. ShellCheck (any of these)
-shellcheck -x -S warning bin/* lib/*.sh install.sh setup.sh pi-dockerized.sh run-simple.sh completions/*.sh
+shellcheck -x -S warning bin/* lib/*.sh lib/config/*.sh install.sh setup.sh pi-dockerized.sh run-simple.sh completions/*.sh
 # …or without a local install:
-cat lib/config-lib.sh | docker run --rm -i koalaman/shellcheck:stable -s bash -x -S warning -
+cat lib/config/*.sh | docker run --rm -i koalaman/shellcheck:stable -s bash -x -S warning -
 
 # 3. Dockerfile
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
@@ -40,7 +40,7 @@ bash tests/wrapper-args.test.sh
   snake_case functions, UPPER_SNAKE constants, quoted variables, `$()`, arrays
   for Docker arguments).
 - Every executable script starts with `#!/bin/bash` + `set -e`;
-  `lib/config-lib.sh` and `lib/install-lib.sh` are sourced libraries and must
+  `lib/config-lib.sh`, `lib/config/*.sh` and `lib/install-lib.sh` are sourced libraries and must
   **not** use `set -e`.
 - The binary is `bin/pi-dockerized` (no extension), reached via `<install>/bin`
   on PATH. Nothing is ever placed in `~/.local/bin`.

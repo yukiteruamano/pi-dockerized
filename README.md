@@ -89,7 +89,7 @@ pi-dockerized stats            # Session usage statistics (best-effort)
 pi-dockerized doctor           # Diagnose guard, config, credentials, SSH/GPG
 pi-dockerized build            # Build the Docker image
 pi-dockerized install [OPTS]   # Install/repair PATH, config, completions, aliases
-pi-dockerized update [--check|--yes|--no-build]  # git pull + sync + rebuild
+pi-dockerized update [--check|--yes|--no-build|--pi-version X]  # git pull + sync + rebuild (Pi: latest or x.y.z)
 pi-dockerized upgrade          # Same as update (with prompt)
 pi-dockerized version          # Wrapper + guard + Pi versions
 pi-dockerized config show|edit|path|sync         # Wrapper INI config
@@ -217,7 +217,9 @@ patterns:
 ## File Reference
 
 - `bin/pi-dockerized` — main wrapper.
-- `lib/config-lib.sh` — shared config/mount/env logic (sourced).
+- `lib/config-lib.sh` — loader for the shared config/mount/env logic; the
+  modules live in `lib/config/` (`core`, `state`, `gpg-ssh`, `docker-args`,
+  `settings`, `parse`, `prompts`).
 - `lib/install-lib.sh` — install wizard (sourced).
 - `Dockerfile` — image: Debian + Node/NVM + pnpm + uv + Pi; bakes `container/`,
   `extensions/` and the packages from `install-extensions`.
