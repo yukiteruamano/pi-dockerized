@@ -229,10 +229,11 @@ ensure_pi_state() {
 
     # Runtime state Pi writes into the agent directory; bind-mounted read-write.
     # Created up front so a bind never fails on a missing source. The JSON files
-    # are seeded as empty objects (a zero-byte file would break Pi's parser).
+    # are seeded as empty objects; an empty/zero-byte file (from an older run)
+    # would break Pi's parser, so it is healed here.
     local f
     for f in auth.json mcp-auth.json trust.json; do
-        if [ ! -f "$agent/$f" ]; then
+        if [ ! -s "$agent/$f" ]; then
             printf '{}\n' >"$agent/$f" 2>/dev/null || true
         fi
     done
