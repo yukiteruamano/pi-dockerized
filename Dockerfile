@@ -91,6 +91,9 @@ ENV PATH="$PNPM_HOME/bin:$NVM_DIR/default:/home/coder/.local/bin:$PATH"
 # NVM installs the current Node LTS and the Docker apt repo tracks `stable` on
 # purpose: both follow upstream security fixes. Pi, uv, pnpm and nvm are pinned.
 
+# Install qmd (on-device markdown search engine) globally with pnpm.
+RUN pnpm add -g @tobilu/qmd
+
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
 # ARG PI_VERSION pins the release (default v1.1.0).
