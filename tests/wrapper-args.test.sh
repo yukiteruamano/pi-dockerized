@@ -177,6 +177,44 @@ if [ "$have_node" = true ]; then
     json_valid "$AGENT/mcp.json" || fail "mcp.json must be reseeded valid"
 fi
 
+# --- Pi invocation args --------------------------------------------------------
+# Regression: build_pi_args must return 0 when theme/model are empty, otherwise
+# the wrapper (set -e) exits silently before `docker run`.
+# Run in a separate bash: `set -e` is ignored inside `( ... ) || cmd`, which
+# would hide exactly this failure mode.
+run_pi_args() {
+    # run_pi_args <theme> <model>: prints the resulting args, set -e active.
+    bash -c 'set -e
+        source "$1/lib/config-lib.sh"
+        THEME="$2" MODEL="$3"
+        args=()
+        build_pi_args args
+        echo "${args[*]}"' _ "$REPO_DIR" "$1" "$2"
+}
+out="$(run_pi_args "" "")" || fail "build_pi_args must succeed with empty theme/model"
+[ -z "$out" ] || fail "build_pi_args must add nothing with empty theme/model (got: $out)"
+out="$(run_pi_args "dark" "sonnet")" || fail "build_pi_args must succeed with theme/model set"
+[ "$out" = "--use-theme dark --model sonnet" ] || fail "build_pi_args args mismatch (got: $out)"
+
+# --- `run` end to end without Docker ------------------------------------------
+# A fake docker lets the wrapper reach the final `docker run` (DRY_RUN prints it).
+FAKE_BIN="$TMP/fakebin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/bash\nexit 0\n' >"$FAKE_BIN/docker"
+chmod +x "$FAKE_BIN/docker"
+run_out="$(PATH="$FAKE_BIN:$PATH" DRY_RUN=true "$REPO_DIR/bin/pi-dockerized" run "$PROJECT" 2>&1)" ||
+    fail "DRY_RUN run must exit 0 (got: $run_out)"
+assert_contains "$run_out" "pi-dockerized:latest" "DRY_RUN run must print the docker command"
+
+# --- update --pi-version validation ---------------------------------------------
+# The value ends up in `docker build --build-arg`; reject anything but a version.
+if PATH="$FAKE_BIN:$PATH" "$REPO_DIR/bin/pi-dockerized" update --pi-version 'x;rm' >/dev/null 2>&1; then
+    fail "update must reject an invalid --pi-version"
+fi
+if PATH="$FAKE_BIN:$PATH" "$REPO_DIR/bin/pi-dockerized" update --pi-version >/dev/null 2>&1; then
+    fail "update must reject --pi-version without a value"
+fi
+
 # --- Container-sync refusal --------------------------------------------------
 # Only meaningful where a container marker exists (CI runners are bare metal).
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
