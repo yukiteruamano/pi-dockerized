@@ -96,14 +96,13 @@ RUN pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@e
 # baked here read-only at build time; the writable state (skills, sessions,
 # auth, MCP OAuth, trust, logs) is bind-mounted from the host at run time.
 ENV PI_CODING_AGENT_DIR="/home/coder/.pi/agent"
-# Deterministic location for extension/package installs, also locked read-only.
-ENV PI_PACKAGE_DIR="/home/coder/.pi/packages"
+# Do NOT set PI_PACKAGE_DIR: Pi reads its own package.json (version), themes and
+# docs from it, so overriding it makes `pi --version` report 0.0.0.
 RUN mkdir -p /home/coder/.pi/agent/extensions \
     /home/coder/.pi/agent/skills \
     /home/coder/.pi/agent/prompts \
     /home/coder/.pi/agent/themes \
     /home/coder/.pi/agent/sessions \
-    /home/coder/.pi/packages \
     /home/coder/.npm && \
     printf '{\n  "mcpServers": {}\n}\n' > /home/coder/.pi/agent/mcp.json && \
     printf '{}\n' > /home/coder/.pi/agent/auth.json && \
@@ -155,8 +154,7 @@ USER root
 RUN chmod -R a-w \
       /home/coder/.pi/agent/extensions \
       /home/coder/.pi/agent/prompts \
-      /home/coder/.pi/agent/themes \
-      /home/coder/.pi/packages && \
+      /home/coder/.pi/agent/themes && \
     chmod a-w \
       /home/coder/.pi/agent/settings.json \
       /home/coder/.pi/agent/AGENTS.md \
