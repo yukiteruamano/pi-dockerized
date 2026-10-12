@@ -104,7 +104,7 @@ validate_pi_config() {
     *)
         config_error "Inline secrets in $mcp ($keys ): use \${VAR} references instead."
         config_info "Put the values in setting.env_file and reference them as \${VAR} in mcp.json."
-        return 1
+        return "$E_CONFIG"
         ;;
     esac
     return 0
@@ -123,7 +123,7 @@ validate_pi_config() {
 build_common_docker_args() {
     # shellcheck disable=SC2034  # DOCKER_COMMON_ARGS is used by callers that source this file
     # Block runs whose mcp.json carries inline secrets (must use ${VAR}).
-    validate_pi_config || exit 1
+    validate_pi_config || exit "$E_CONFIG"
     # Allowlist the network mode (config values are user-edited).
     case "${NETWORK:-host}" in
     host | bridge) ;;

@@ -8,6 +8,20 @@
 # GnuPG / SSH AGENT FORWARDING
 # ============================================
 
+# True when a forwarding socket is safe to mount: a real socket owned by this
+# user. A planted socket (another owner) could impersonate the agent and
+# harvest signatures or auth requests. Warns on refusal.
+# Usage: forwarding_socket_ok <path> <what>
+forwarding_socket_ok() {
+    local sock="$1" what="$2"
+    [ -S "$sock" ] || return 1
+    if [ ! -O "$sock" ]; then
+        config_warning "$what socket $sock is not owned by you; refusing to forward it"
+        return 1
+    fi
+    return 0
+}
+
 # Resolve the host's gpg-agent socket path.
 # Prefers an explicit override (GPG_AGENT_SOCKET, used by tests), then gpgconf.
 # Prints an empty string when neither is available.
@@ -53,7 +67,8 @@ gpg_agent_is_running() {
         return 1
     fi
 
-    local probe_cmd; probe_cmd=$(test_seam GPG_AGENT_PROBE_CMD)
+    local probe_cmd
+    probe_cmd=$(test_seam GPG_AGENT_PROBE_CMD)
     if [ -n "$probe_cmd" ]; then
         bash -c "$probe_cmd" >/dev/null 2>&1 && return 0
         return 1
@@ -122,7 +137,8 @@ ensure_gpg_agent_ready() {
     done
 
     config_info "Starting host gpg-agent for GnuPG forwarding..."
-    local launch_cmd; launch_cmd=$(test_seam GPG_AGENT_LAUNCH_CMD)
+    local launch_cmd
+    launch_cmd=$(test_seam GPG_AGENT_LAUNCH_CMD)
     if [ -n "$launch_cmd" ]; then
         bash -c "$launch_cmd" >/dev/null 2>&1 || true
     else
@@ -173,8 +189,11 @@ ensure_ssh_agent_ready() {
         return 0
     fi
 
-    # The socket exists. Do not query it here (ssh-add against a non-agent
-    # socket can block); the forwarded agent is used by git/ssh directly.
+    # The socket exists. Ownership is enforced again at the mount site; a
+    # planted socket must never be forwarded even if this check is skipped.
+    # Do not query it here (ssh-add against a non-agent socket can block);
+    # the forwarded agent is used by git/ssh directly.
+    forwarding_socket_ok "$SSH_AUTH_SOCK" "SSH agent" || true
     return 0
 }
 
@@ -261,10 +280,10 @@ ensure_gpg_mirror() {
 relay_dir_ok() {
     [ -n "$GPG_RELAY_DIR" ] || return 1
     case "$GPG_RELAY_DIR" in
-        / | "") return 1 ;;
+    / | "") return 1 ;;
     esac
     case "$GPG_RELAY_DIR" in
-        "$CONFIG_DIR"/* | "$HOME"/*) return 0 ;;
+    "$CONFIG_DIR"/* | "$HOME"/*) return 0 ;;
     esac
     return 1
 }
@@ -297,7 +316,8 @@ start_gpg_relay() {
     [ -n "$real" ] && [ -S "$real" ] || return 1
     relay_dir_ok || return 1
 
-    local template; template=$(test_seam GPG_RELAY_CMD)
+    local template
+    template=$(test_seam GPG_RELAY_CMD)
     if [ -z "$template" ]; then
         command -v socat >/dev/null 2>&1 || return 1
         # Single quotes are intentional: expanded later via RELAY_SOCK/RELAY_REAL env.
@@ -349,8 +369,8 @@ stop_gpg_relay() {
     dir=$(dirname "$sock")
     # Only ever touch directories we own under GPG_RELAY_DIR.
     case "$dir" in
-        "$GPG_RELAY_DIR"/*) ;;
-        *) return 0 ;;
+    "$GPG_RELAY_DIR"/*) ;;
+    *) return 0 ;;
     esac
     local pid
     pid=$(cat "$dir/pid" 2>/dev/null || true)

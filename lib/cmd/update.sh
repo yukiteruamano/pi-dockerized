@@ -133,6 +133,43 @@ _parse_self_update_flags() {
     return 0
 }
 
+# After a failed rebuild the new code is in place but the image is stale:
+# offer to put the code back where it was (the failed candidate image was
+# already discarded by build_image, so the image needs no rollback). Never
+# resets a dirty worktree, and never resets non-interactively without --yes.
+# Usage: rollback_code_after_failed_build <prev_rev>
+rollback_code_after_failed_build() {
+    local prev_rev="${1:-}" cur_rev
+    [ -n "$prev_rev" ] || return 0
+    cur_rev=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)
+    [ -n "$cur_rev" ] && [ "$cur_rev" != "$prev_rev" ] || return 0
+    print_error "Image rebuild failed; the code was already updated (${prev_rev:0:12} -> ${cur_rev:0:12})."
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]; then
+        print_error "Worktree has local changes; not resetting. Resolve manually (e.g. git reset --hard $prev_rev)."
+        return 1
+    fi
+    local do_rollback=false
+    if [ "$_UP_YES" = true ]; then
+        do_rollback=true
+    elif [ -t 0 ]; then
+        local ans
+        read -r -p "Roll back the code to ${prev_rev:0:12}? [y/N] " ans || ans=""
+        case "$ans" in
+        [Yy] | [Yy]es) do_rollback=true ;;
+        esac
+    fi
+    if [ "$do_rollback" = true ]; then
+        if git -C "$REPO_ROOT" reset --hard "$prev_rev" >/dev/null 2>&1; then
+            print_success "Code rolled back to ${prev_rev:0:12} (image untouched)."
+        else
+            print_error "Rollback failed; resolve manually with git."
+            return 1
+        fi
+    else
+        print_info "Code left at ${cur_rev:0:12}; rebuild with '$0 build' or roll back with 'git reset --hard $prev_rev'."
+    fi
+}
+
 # Full upgrade: git pull + host-state sync + image rebuild.
 # Usage: full_upgrade <command-name> [--check] [--yes] [--no-build] [--verify] [--pi-version X]
 full_upgrade() {
@@ -154,7 +191,8 @@ full_upgrade() {
         [ "$check_rc" -eq 2 ] && return 0
         return 1
     fi
-    local pull_rc=0
+    local pull_rc=0 prev_rev=""
+    prev_rev=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)
     # `update` never prompts (historic one-shot); `upgrade` prompts when tty.
     if [ "$cmd" = "update" ]; then
         _git_pull_wrapper true false "$verify" || pull_rc=$?
@@ -181,7 +219,10 @@ full_upgrade() {
     fi
     local -a build_args=(--bust-cache)
     [ -n "$_UP_PI_VERSION" ] && build_args+=(--pi-version "$_UP_PI_VERSION")
-    build_image "${build_args[@]}" || return 1
+    if ! build_image "${build_args[@]}"; then
+        rollback_code_after_failed_build "$prev_rev" || true
+        return 1
+    fi
     print_info "Updated Pi version:"
     docker run --rm --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
     print_success "Upgrade complete (code + config + image)."

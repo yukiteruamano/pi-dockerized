@@ -35,7 +35,7 @@ validate_ext_source() {
 run_ext_install() {
     local allow_scripts="$1"
     shift
-    check_image "$IMAGE_NAME" || exit 1
+    check_image "$IMAGE_NAME" || exit "$E_DOCKER"
     ensure_pi_dirs
     parse_config
 

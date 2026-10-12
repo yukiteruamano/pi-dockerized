@@ -18,7 +18,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh entrypoint.sh
+          bash -n bin/pi-dockerized install.sh entrypoint.sh
           for f in lib/*.sh lib/*/*.sh completions/*.sh scripts/*.sh container/*.sh tests/*.sh; do
             bash -n "$f"
           done
@@ -29,6 +29,20 @@ jobs:
           scandir: .
         env:
           SHELLCHECK_OPTS: -x -S warning
+
+      # Advisory until the tree is normalized with `shfmt -w -i 4 -ci .`:
+      # then drop `continue-on-error` to enforce it.
+      - name: shfmt (advisory)
+        continue-on-error: true
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
+          "$(go env GOPATH)/bin/shfmt" -d -i 4 -ci bin/ lib/ install.sh entrypoint.sh scripts/ container/ completions/ tests/
+
+      - name: actionlint (advisory)
+        continue-on-error: true
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/
 
       - name: Wrapper args test
         run: bash tests/wrapper-args.test.sh

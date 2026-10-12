@@ -72,7 +72,7 @@
 # rebuild afterwards ('pi-dockerized build'); the wrapper warns if it is missing.
 
 # Security policy mode enforced by the baked security-guard extension.
-#   strict   = every vendored opencode-policy pattern, and tools outside Pi's
+#   strict   = every vendored policy pattern (upstream opencode-policy), and tools outside Pi's
 #              built-in set (MCP tools, other extensions) are refused unless
 #              listed in allowed_tools
 #   balanced = drop cloud/multi-tenant rules and common dev false positives (default)
@@ -81,7 +81,10 @@
 # One session can override it: pi-dockerized run --policy strict
 # setting.security_policy=balanced
 
-# Tools that strict mode lets through besides Pi's own (comma-separated names).
+# Tools that strict mode lets through besides Pi's own (comma-separated).
+# Plain names allow the tool (values still scanned): mcp_fetch,mcp_search.
+# name:scope+scope restricts it to inputs containing a scope:
+# mcp_fetch:example.com+internal.lan. `name:*` is the same as a plain name.
 # Ignored in balanced/off.
 #
 # setting.allowed_tools=

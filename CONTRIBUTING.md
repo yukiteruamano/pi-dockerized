@@ -17,11 +17,11 @@ CI runs all of these; you can run them locally:
 
 ```bash
 # 1. Syntax
-bash -n bin/pi-dockerized install.sh pi-dockerized.sh setup.sh run-simple.sh entrypoint.sh
+bash -n bin/pi-dockerized install.sh entrypoint.sh
 for f in lib/*.sh lib/*/*.sh completions/*.sh scripts/*.sh container/*.sh tests/*.sh; do bash -n "$f"; done
 
 # 2. ShellCheck (any of these)
-shellcheck -x -S warning bin/* lib/*.sh lib/*/*.sh install.sh setup.sh pi-dockerized.sh run-simple.sh entrypoint.sh scripts/*.sh container/*.sh completions/*.sh tests/*.sh
+shellcheck -x -S warning bin/* lib/*.sh lib/*/*.sh install.sh entrypoint.sh scripts/*.sh container/*.sh completions/*.sh tests/*.sh
 # …or without a local install (pinned image, same as CI's tool version):
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 -x -S warning bin/* lib/*.sh lib/*/*.sh install.sh entrypoint.sh scripts/*.sh container/*.sh
 
@@ -38,7 +38,8 @@ bash tests/wrapper-commands.test.sh
 ```
 
 CI also builds nothing on the contributor's machine, but the image workflow
-(`.github/workflows/image.yml`) smoke-tests every release, and
+(`.github/workflows/image.yml`) smoke-tests every release,
+`e2e.yml` runs a weekly Docker build + doctor + dry-run pass, and
 `security.yml` scans the image and the history for secrets.
 
 ## Style
@@ -68,7 +69,7 @@ CI also builds nothing on the contributor's machine, but the image workflow
   pull request that touches the guard or `policies/` without doing so.
 - The extension is **baked into the image** at build time (the Dockerfile copies
   it and `policies/*.json`), so a change only takes effect after a rebuild.
-- **`policies/*.json` are vendored verbatim** from opencode-policy
+- **`policies/*.json` are vendored verbatim** from upstream opencode-policy
   (`policies/README.md`); refresh them with `scripts/refresh-policies.sh` (shows
   the diff first, `--apply` writes it). To change behavior for local use, prefer
   the policy mode (`strict` / `balanced` / `off`), `config allow edit` (host

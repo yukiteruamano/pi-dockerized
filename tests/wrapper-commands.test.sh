@@ -173,7 +173,10 @@ assert_eq "$NETWORK" "host" "invalid enum keeps the default"
 
 # parse_config reads the file once per process.
 _CONFIG_LOADED=false
-first="$(parse_config 2>&1; parse_config 2>&1)"
+first="$(
+    parse_config 2>&1
+    parse_config 2>&1
+)"
 count="$(printf '%s' "$first" | grep -c "unknown setting 'netwrok'")"
 assert_eq "$count" "1" "parse_config must not repeat warnings"
 
@@ -250,6 +253,24 @@ assert_eq "$SECURITY_POLICY/$NETWORK" "off/bridge" "explicit flags override the 
 SESSION_POLICY="" SESSION_NETWORK="" SESSION_UNTRUSTED=false
 reset_settings
 
+# --- Session flag parsing (resume/list/timeout) ---------------------------------------
+parse_session_flags --resume abc123 --policy strict
+assert_eq "$SESSION_RESUME" "abc123" "--resume takes an id"
+assert_eq "$SESSION_POLICY" "strict" "flags after --resume ID still parse"
+parse_session_flags --resume
+assert_eq "$SESSION_RESUME" "select" "bare --resume selects interactively"
+parse_session_flags --resume=abc123
+assert_eq "$SESSION_RESUME" "abc123" "--resume= takes an id"
+parse_session_flags --list
+assert_eq "$SESSION_LIST" "true" "--list is parsed"
+parse_session_flags --timeout 5m
+assert_eq "$SESSION_TIMEOUT" "5m" "--timeout is parsed"
+(parse_session_flags --timeout bogus >/dev/null 2>&1) && fail "invalid --timeout must be rejected"
+parse_session_flags --policy strict
+assert_eq "${SESSION_RESUME:-}" "" "resume resets between parses"
+assert_eq "$SESSION_LIST" "false" "list resets between parses"
+assert_eq "$SESSION_TIMEOUT" "" "timeout resets between parses"
+
 # --- Exposure summary ----------------------------------------------------------------------------
 out="$(print_session_exposure 2>&1)"
 assert_contains "$out" "network=host policy=balanced" "exposure line shows network and policy"
@@ -319,6 +340,9 @@ assert_contains "$out" "Exposure: untrusted network=bridge policy=strict" "run p
 assert_contains "$out" "PI_DOCKERIZED_POLICY=strict" "untrusted forces the strict policy"
 assert_contains "$out" "pi-dockerized.project=$PROJECT" "sessions carry the project label"
 DRY_RUN=true bin run --untrusted --policy off "$PROJECT" >/dev/null 2>&1 && fail "contradictory flags must fail"
+DRY_RUN=true bin exec --dir "$PROJECT" --timeout abc "hi" >/dev/null 2>&1 && fail "exec must reject a bad --timeout"
+out="$(DRY_RUN=true bin exec --dir "$PROJECT" --timeout 60 "hi" 2>&1)" || fail "exec with --timeout must work"
+assert_contains "$out" "timeout" "exec --timeout wraps the docker command"
 
 # exec: stdin prompt, --dir, exit code propagation.
 out="$(echo "summarize this" | DRY_RUN=true bin exec --dir "$PROJECT" 2>&1)" || fail "exec reads the prompt from stdin"
@@ -328,6 +352,10 @@ assert_contains "$out" "$PROJECT:$PROJECT" "exec --dir mounts that directory"
 out="$(echo "from stdin" | DRY_RUN=true bin exec - --model x 2>&1)" || fail "exec - reads stdin"
 assert_contains "$out" "from stdin" "exec - passes the stdin prompt"
 assert_contains "$out" "--model" "exec keeps Pi's own flags"
+# A message starting with `-` must not become a pi flag.
+out="$(DRY_RUN=true bin exec --dir "$PROJECT" -- "-weird flag-like message" 2>&1)" || fail "exec with a dash message must work"
+printf '%s\n' "$out" | grep -qx -- "--" || fail "exec must separate the message with --"
+assert_contains "$out" '"-weird flag-like message"' "exec passes the dash message through"
 bin exec </dev/null >/dev/null 2>&1 && fail "exec without a prompt must fail"
 FAKE_RUN_FAIL=1 bin exec "hello" >/dev/null 2>&1
 rc=$?
@@ -385,9 +413,53 @@ assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "<none>" "clean must skip untagg
 FAKE_PS_NAMES="pi-a pi-b" bin stop pi-a >/dev/null 2>&1 || fail "stop NAME"
 assert_contains "$(cat "$FAKE_DOCKER_LOG")" "stop pi-a" "stop NAME stops that session"
 : >"$FAKE_DOCKER_LOG"
-FAKE_PS_NAMES="pi-a pi-b" bin stop --all >/dev/null 2>&1 || fail "stop --all"
-assert_contains "$(cat "$FAKE_DOCKER_LOG")" "stop pi-a pi-b" "stop --all stops every session"
+FAKE_PS_NAMES="pi-a pi-b" bin stop --all --yes >/dev/null 2>&1 || fail "stop --all --yes"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "stop pi-a pi-b" "stop --all --yes stops every session"
+FAKE_PS_NAMES="pi-a pi-b" bin stop --all >/dev/null 2>&1 </dev/null && fail "stop --all without --yes must fail"
+out="$(FAKE_PS_NAMES="pi-a pi-b" bin stop pi-zzz 2>&1)" && fail "stop with an unknown name must fail"
+assert_contains "$out" "No session named 'pi-zzz'" "stop names the unknown session"
+out="$(FAKE_PS_NAMES="pi-a pi-b" bin stop pi- 2>&1)" && fail "stop with a prefix must fail (exact names only)"
+assert_contains "$out" "Did you mean" "stop suggests similar names"
 bin stop >/dev/null 2>&1 && fail "stop without a target must fail"
+bin doctor --bogus >/dev/null 2>&1 && fail "doctor must reject unknown flags"
+bin doctor --fix >/dev/null 2>&1 || fail "doctor --fix must repair and diagnose"
+
+# --- audit --explain ---------------------------------------------------------------
+printf '%s\n' '{"ts":"2026-01-01T00:00:00.000Z","tool":"bash","rule":"backstop/unknown-tool","target":"mcp_x"}' \
+    '{"ts":"2026-01-02T00:00:00.000Z","tool":"bash","rule":"pi-policy/env-direct-2","target":"printenv"}' >>"$AGENT/audit.log"
+out="$(bin audit --explain 2>&1)" || fail "audit --explain must work"
+assert_contains "$out" "pi-policy/env-direct-2" "explain defaults to the newest entry"
+assert_contains "$out" "Leaks environment variables" "explain shows the rule reason"
+assert_contains "$out" "allow edit" "explain tells how to relax vendored rules"
+out="$(bin audit --explain 2 2>&1)" || fail "audit --explain 2 must work"
+assert_contains "$out" "backstop/unknown-tool" "explain N picks the Nth entry"
+assert_contains "$out" "allowed_tools" "explain tells how to allow unknown tools"
+bin audit --explain 99 >/dev/null 2>&1 && fail "explain past the end must fail"
+bin audit --explain 0 >/dev/null 2>&1 && fail "explain 0 must fail"
+
+# --- run --list / --resume -----------------------------------------------------------
+mkdir -p "$AGENT/sessions"
+printf '%s\n' '{"type":"session","id":"abc12345-xxxx","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/proj"}' >"$AGENT/sessions/2026-01-01T00-00-00-000Z_abc12345-xxxx.jsonl"
+out="$(bin run --list 2>&1)" || fail "run --list must work without a container"
+assert_contains "$out" "abc12345" "run --list shows the session id"
+assert_contains "$out" "/tmp/proj" "run --list shows the session project"
+rm -f "$AGENT/sessions/2026-01-01T00-00-00-000Z_abc12345-xxxx.jsonl"
+out="$(DRY_RUN=true bin run --resume abc123 "$PROJECT" 2>&1)" || fail "run --resume must work"
+assert_contains "$out" "--session" "run --resume forwards --session to pi"
+assert_contains "$out" "abc123" "run --resume forwards the id"
+
+# ps --json: one JSON object per session (scriptable).
+: >"$FAKE_DOCKER_LOG"
+out="$(FAKE_PS_NAMES="pi-a pi-b" bin ps --json 2>&1)" || fail "ps --json must work"
+assert_contains "$out" '"name":"pi-a"' "ps --json lists sessions as JSON"
+printf '%s\n' "$out" | grep -q '^{"name":' || fail "ps --json prints one object per line"
+
+# stats --json: local session files as JSON (no container needed).
+touch "$AGENT/sessions/sess-1.json"
+out="$(bin stats --json 2>&1)" || fail "stats --json must work"
+assert_contains "$out" '"sessions"' "stats --json lists sessions"
+assert_contains "$out" 'sess-1.json' "stats --json names session files"
+rm -f "$AGENT/sessions/sess-1.json"
 
 # pull: refuses to proceed without cosign unless --no-verify.
 out="$(PATH="$FAKE_BIN:/usr/bin:/bin" "$BIN" pull 2>&1)" && fail "pull without cosign must fail"

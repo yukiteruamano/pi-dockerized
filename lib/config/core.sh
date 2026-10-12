@@ -62,6 +62,11 @@ PI_BIN_DIR="$PI_INSTALL_DIR/bin"
 # shellcheck disable=SC2034,SC2016 # consumed by lib/install-lib.sh; single quotes are intentional
 PI_BIN_PATH_LINE='export PATH="$HOME/.local/share/pi-dockerized/bin:$PATH"'
 
+# Stable exit codes so scripts and CI can react without parsing text.
+# 2 = wrong invocation/project, 3 = bad host config, 4 = Docker/image problem,
+# 5 = security-guard refusal. Everything else keeps exit 1.
+E_USAGE=2 E_CONFIG=3 E_DOCKER=4 E_GUARD=5
+
 # ============================================
 # COLOR DEFINITIONS (with defaults if not set)
 # ============================================
@@ -104,6 +109,14 @@ print_error() { printf '%b%s%b %s\n' "$RED" "✗" "$NC" "$(safe_text "$1")" >&2;
 config_info() { print_info "$1"; }
 config_success() { print_success "$1"; }
 config_warning() { print_warning "$1"; }
+
+# Escape a string for embedding in JSON double quotes (backslash + quote).
+# Docker names and session basenames cannot contain newlines, so no other
+# control character needs handling here.
+# Usage: json_escape <string>
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
 config_error() { print_error "$1"; }
 
 # Resolve an editor: $EDITOR first, then common fallbacks.
@@ -134,28 +147,28 @@ declare -a DOCKER_MOUNT_ARGS=() # Array of docker -v arguments (populated by bui
 declare -a DOCKER_ENV_ARGS=()   # Array of docker -e arguments (populated by build_env_args)
 # shellcheck disable=SC2034 # populated here, consumed by callers (bin/pi-dockerized, tests)
 declare -a DOCKER_ENV_FILE_ARGS=() # Array of docker --env-file arguments (populated by build_env_file_args)
-declare -a VOLUME_ARGS=()       # Array of standard volume mount arguments (populated by build_standard_volume_args)
-declare -a GIT_WORKTREE_ARGS=() # Array of docker args for git worktree support (populated by build_git_worktree_args)
-SSH_AGENT_SUPPORT=false         # Boolean flag for SSH agent forwarding support
-GPG_AGENT_SUPPORT=false         # Boolean flag for GnuPG agent forwarding (git signing)
-GPG_ALLOW_MAIN_SOCKET=false     # Allow fallback to the full-control agent socket
-GPG_AUTOSTART_AGENT=true        # Launch the host gpg-agent when its socket is missing
-GPG_RELAY=true                  # Relay the agent socket through a normal-fs socket
-GPG_RELAY_SOCKET=""             # Active relay socket for the current session
-DOCKER_SOCKET=false             # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
-NETWORK="host"                  # Container network: host (default, simple) | bridge (more isolated)
-SECURITY_POLICY="balanced"      # Security policy mode: strict | balanced | off
-MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
-CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
-ENV_FILE=""                     # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
-THEME=""                        # Optional Pi theme name (built-in, e.g. system); empty = Pi default
-MODEL=""                        # Optional Pi model selection (--model), empty = Pi default
-GPG_SOCKET=""                   # Resolved host agent socket (set by build_mount_args)
-ALLOWED_TOOLS=""                # Comma list of tools strict mode lets through besides the built-in ones
-VERIFY_UPDATES=false            # Require a verified (signed) upstream commit before `update` pulls
-SESSION_POLICY=""               # Per-invocation override of SECURITY_POLICY (run/shell/exec flags)
-SESSION_NETWORK=""              # Per-invocation override of NETWORK
-SESSION_UNTRUSTED=false         # --untrusted: strict policy, bridge network, no forwarding, no extra mounts
+declare -a VOLUME_ARGS=()          # Array of standard volume mount arguments (populated by build_standard_volume_args)
+declare -a GIT_WORKTREE_ARGS=()    # Array of docker args for git worktree support (populated by build_git_worktree_args)
+SSH_AGENT_SUPPORT=false            # Boolean flag for SSH agent forwarding support
+GPG_AGENT_SUPPORT=false            # Boolean flag for GnuPG agent forwarding (git signing)
+GPG_ALLOW_MAIN_SOCKET=false        # Allow fallback to the full-control agent socket
+GPG_AUTOSTART_AGENT=true           # Launch the host gpg-agent when its socket is missing
+GPG_RELAY=true                     # Relay the agent socket through a normal-fs socket
+GPG_RELAY_SOCKET=""                # Active relay socket for the current session
+DOCKER_SOCKET=false                # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
+NETWORK="host"                     # Container network: host (default, simple) | bridge (more isolated)
+SECURITY_POLICY="balanced"         # Security policy mode: strict | balanced | off
+MEMORY=""                          # Optional container memory limit (docker --memory), e.g. 4g
+CPUS=""                            # Optional container CPU limit (docker --cpus), e.g. 2
+ENV_FILE=""                        # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
+THEME=""                           # Optional Pi theme name (built-in, e.g. system); empty = Pi default
+MODEL=""                           # Optional Pi model selection (--model), empty = Pi default
+GPG_SOCKET=""                      # Resolved host agent socket (set by build_mount_args)
+ALLOWED_TOOLS=""                   # Comma list of tools strict mode lets through besides the built-in ones
+VERIFY_UPDATES=false               # Require a verified (signed) upstream commit before `update` pulls
+SESSION_POLICY=""                  # Per-invocation override of SECURITY_POLICY (run/shell/exec flags)
+SESSION_NETWORK=""                 # Per-invocation override of NETWORK
+SESSION_UNTRUSTED=false            # --untrusted: strict policy, bridge network, no forwarding, no extra mounts
 
 # ============================================
 # SHARED HELPERS
@@ -260,7 +273,7 @@ check_image() {
     local image_name="$1"
     if ! docker image inspect "$image_name" >/dev/null 2>&1; then
         config_error "Docker image '$image_name' not found. Run '$0 build' first."
-        return 1
+        return "$E_DOCKER"
     fi
 }
 

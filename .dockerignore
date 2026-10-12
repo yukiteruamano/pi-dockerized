@@ -23,9 +23,6 @@ tests/
 bin/
 lib/
 completions/
-run-simple.sh
-setup.sh
-pi-dockerized.sh
 install.sh
 
 # Docker

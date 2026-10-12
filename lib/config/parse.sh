@@ -107,7 +107,7 @@ build_mount_args() {
     # Handle SSH agent forwarding if enabled. ensure_ssh_agent_ready has already
     # reported why a socket is unusable, so only a valid socket is mounted here.
     if [ "$SSH_AGENT_SUPPORT" = true ]; then
-        if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+        if [ -n "${SSH_AUTH_SOCK:-}" ] && forwarding_socket_ok "$SSH_AUTH_SOCK" "SSH agent"; then
             # --mount (not -v) so a stale/missing source fails loudly instead
             # of Docker creating a directory at the host socket path, which
             # would break the real ssh-agent.
@@ -156,7 +156,7 @@ build_mount_args() {
             gpg_socket=""
         fi
 
-        if [ -n "$gpg_socket" ] && [ -S "$gpg_socket" ]; then
+        if [ -n "$gpg_socket" ] && forwarding_socket_ok "$gpg_socket" "GnuPG agent"; then
             GPG_SOCKET="$gpg_socket"
             local mount_socket="$gpg_socket"
             # Docker cannot bind a socket from a per-user tmpfs (/run/user/...):

@@ -275,6 +275,27 @@ interactive_config_setup() {
 # OUTPUT HELPERS
 # ============================================
 
+# Warn (never block) when the project itself contains credential-looking files
+# near the top level: Pi will read them into prompts. Names only, never
+# contents; `*.example` templates are ignored.
+# Usage: warn_project_secrets
+warn_project_secrets() {
+    local dir="${SESSION_PROJECT:-}"
+    [ -n "$dir" ] && [ -d "$dir" ] || return 0
+    local hits
+    hits=$(find "$dir" -maxdepth 2 \
+        \( -name ".env" -o -name "*.pem" -o -name "*.key" \
+        -o -name "id_rsa" -o -name "id_dsa" -o -name "id_ecdsa" -o -name "id_ed25519" \
+        -o -name "*.netrc" -o -name ".git-credentials" \) \
+        ! -name "*.example*" -print 2>/dev/null | head -5) || return 0
+    [ -n "$hits" ] || return 0
+    print_warning "Project contains credential-looking files (Pi can read them into prompts):"
+    local f
+    while IFS= read -r f; do
+        print_warning "  ${f#"$dir"/}"
+    done <<<"$hits"
+}
+
 # One-line summary of what this session exposes, plus a warning for the
 # settings that remove a safeguard. Shown before every project session.
 # Usage: print_session_exposure
@@ -294,10 +315,21 @@ print_session_exposure() {
     if [ "$SECURITY_POLICY" = off ]; then
         print_warning "Security policy is 'off': only the built-in backstops are enforced."
     fi
+    warn_project_secrets
 }
 
 _onoff() {
     if [ "$1" = true ]; then echo on; else echo off; fi
+}
+
+# Print every setting with where its value comes from (config file/default).
+# Usage: print_config_sources
+print_config_sources() {
+    echo "Pi Dockerized configuration (with sources)"
+    local key
+    for key in "${SETTING_KEYS[@]}"; do
+        printf '  setting.%s=%s  (%s)\n' "$key" "$(_get_setting "$key")" "$(setting_source "$key")"
+    done
 }
 
 # Print parsed configuration.

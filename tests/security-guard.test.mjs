@@ -9,6 +9,7 @@
 //
 // Usage: node tests/security-guard.test.mjs
 
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
@@ -24,13 +25,15 @@ import { fileURLToPath } from "node:url";
 import {
   BALANCED_EXCLUDED_IDS,
   EXTRA_WRITE_ROOTS,
+  GUARD_VERSION,
   MAX_EVAL_LENGTH,
+  allowedScope,
   compile,
   selectRules,
   evaluateToolCall,
   redact,
 } from "../extensions/pi-security-guard/policy.mjs";
-import { dequote, shellVariants } from "../extensions/pi-security-guard/shell.mjs";
+import { dequote, decodeAnsiC, normalizeShell, shellVariants } from "../extensions/pi-security-guard/shell.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..");
@@ -376,6 +379,16 @@ const obfuscated = [
   "cat .e\"\"nv",
   "s''udo id",
   "r\\m -rf /",
+  // Fuzz corpus: every de-obfuscation layer must expose these.
+  "cat${IFS}.env",
+  "cat${IFS%??}.env",
+  "$'cat .env'",
+  "$'\\x63\\x61\\x74 .env'",
+  "c\\at .env",
+  "cat$'\\t'.env",
+  "cat/**/.env",
+  'c"a"t .env',
+  "C''AT .env",
 ];
 for (const mode of ["strict", "balanced", "off"]) {
   for (const command of obfuscated) {
@@ -383,6 +396,9 @@ for (const mode of ["strict", "balanced", "off"]) {
   }
 }
 check("dequote strips quotes and escapes", dequote(`c''a"t" .e\\nv`) === "cat .env");
+check("decodeAnsiC handles hex and octal", decodeAnsiC("$'\\x63\\x61\\164\\141'") === "cata");
+check("normalizeShell folds IFS variants", normalizeShell("a${IFS%??}b") === "a b");
+check("normalizeShell folds tab escapes", normalizeShell("a$'\\t'b") === "a b");
 check("shellVariants keeps the original", shellVariants("ls")[0] === "ls" && shellVariants("ls").length === 1);
 
 // Every value is capped: the quadratic regexes would otherwise stall the guard.
@@ -412,6 +428,63 @@ check("shellVariants keeps the original", shellVariants("ls")[0] === "ls" && she
     allowPatterns: [],
   });
   check("max-size command evaluates in bounded time", Date.now() - t1 < 15000, `${Date.now() - t1} ms`);
+
+  // Per-value cap: contents under a known write schema are data, not targets,
+  // so a huge edit body with a valid path is not a length refusal...
+  const strictUnsafe = () =>
+    selectRules(compile(loadRules("unsafe-tool-patterns.json")), "strict");
+  const bigBody = evaluateToolCall({
+    tool: "write",
+    input: { path: join(PROJECT, "src/big.txt"), content: "x".repeat(MAX_EVAL_LENGTH * 4) },
+    cwd: PROJECT,
+    unsafePatterns: strictUnsafe(),
+    injectionPatterns: [],
+    allowPatterns: [],
+  });
+  check(
+    "huge write body is not a length refusal",
+    !bigBody || bigBody.rule !== "backstop/too-long",
+    bigBody?.rule ?? "allowed",
+  );
+
+  // ...but one huge value under an unknown schema still fails closed.
+  const bigBlob = evaluateToolCall({
+    tool: "write",
+    input: { blob: "x".repeat(MAX_EVAL_LENGTH + 1) },
+    cwd: PROJECT,
+    unsafePatterns: strictUnsafe(),
+    injectionPatterns: [],
+    allowPatterns: [],
+  });
+  check(
+    "huge unknown-schema value is refused",
+    bigBlob?.block === true && bigBlob.rule === "backstop/too-long",
+  );
+
+  // The joined total stays capped: many individually-small values cannot
+  // smuggle an unbounded scan past the per-value check.
+  const manySmall = evaluateToolCall({
+    tool: "bash",
+    input: { command: "echo hi", note: "n".repeat(MAX_EVAL_LENGTH) },
+    cwd: PROJECT,
+    unsafePatterns: strictUnsafe(),
+    injectionPatterns: [],
+    allowPatterns: [],
+  });
+  check(
+    "joined total over cap is refused",
+    manySmall?.block === true && manySmall.rule === "backstop/too-long",
+  );
+}
+
+// Identical pattern+flags share one RegExp across compile() calls.
+{
+  const once = compile(loadRules("allow-patterns.json"));
+  const twice = compile(loadRules("allow-patterns.json"));
+  check(
+    "identical patterns share compiled regex",
+    once.length > 0 && once.every((r, i) => r.re === twice[i].re),
+  );
 }
 
 // balanced-excluded.json: every ID must still exist upstream, or the exclusion
@@ -492,6 +565,68 @@ check(
 );
 
 rmSync(root, { recursive: true, force: true });
+
+// Scoped strict allowlist: `name` allows the tool, `name:scope+scope`
+// restricts it to inputs containing a scope. Plain names behave as before.
+{
+  const tryFetch = (input, allowedTools) =>
+    evaluateToolCall({
+      tool: "mcp_fetch",
+      input,
+      cwd: PROJECT,
+      unsafePatterns: [],
+      injectionPatterns: [],
+      allowPatterns: [],
+      unknownTools: "deny",
+      allowedTools,
+    });
+  check(
+    "strict denies unlisted tools",
+    tryFetch({ url: "https://example.com" }, [])?.rule === "backstop/unknown-tool",
+  );
+  check(
+    "plain names still allow",
+    tryFetch({ url: "https://example.com" }, ["other", "mcp_fetch"]) === undefined,
+  );
+  check(
+    "scoped entry allows in-scope input",
+    tryFetch({ url: "https://example.com/x" }, ["mcp_fetch:example.com"]) === undefined,
+  );
+  check(
+    "scoped entry blocks out-of-scope input",
+    tryFetch({ url: "https://evil.test/x" }, ["mcp_fetch:example.com"])?.rule ===
+      "backstop/unknown-tool-scope",
+  );
+  check(
+    "name:* is unrestricted",
+    tryFetch({ url: "https://evil.test" }, ["mcp_fetch:*"]) === undefined,
+  );
+  check(
+    "prefix names do not collide",
+    tryFetch({ url: "https://example.com" }, ["mcp"])?.rule === "backstop/unknown-tool",
+  );
+  check(
+    "allowedScope parses entries",
+    JSON.stringify(allowedScope(["a", "b:x+y"], "b")) === '["x","y"]' &&
+      allowedScope(["a"], "z") === null &&
+      allowedScope(["a:"], "a") === "*",
+  );
+}
+
+// Guard version consistency: GUARD_VERSION is the single source of truth -
+// selftest --version (read by `version`/`doctor` from the image) must agree.
+check("GUARD_VERSION is a positive integer", Number.isInteger(GUARD_VERSION) && GUARD_VERSION > 0);
+{
+  const run = spawnSync(process.execPath, [
+    join(repo, "extensions/pi-security-guard/selftest.mjs"),
+    "--version",
+  ]);
+  check(
+    "selftest --version matches GUARD_VERSION",
+    run.status === 0 && String(run.stdout).trim() === String(GUARD_VERSION),
+    String(run.stdout).trim(),
+  );
+}
 
 if (failures > 0) {
   console.log(`\n${failures} failure(s)`);

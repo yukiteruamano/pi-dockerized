@@ -40,7 +40,7 @@ host stays protected.
   host. The host `settings.json` may only hold preferences: the sandbox's
   security keys are pinned and any other key (packages, extensions, command
   settings) stops the session from starting.
-- **Security extension** — the ported `opencode-policy` unsafe/injection pattern
+- **Security extension** — the ported upstream (`opencode-policy`) unsafe/injection pattern
   sets plus built-in backstops (secrets and credential stores, destructive
   commands, Git hooks/config, write confinement) enforced in `strict`,
   `balanced` (default) or `off` modes. Quoting tricks (`cat .e''nv`) are
@@ -266,7 +266,8 @@ setting.model=sonnet
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
 
-See `examples/config.example` for the full reference. Edit one setting without
+See `examples/config.example` for the full reference and `docs/config-reference.md`
+for the setting table. Edit one setting without
 opening the file: `pi-dockerized config set network bridge` (validated like the
 loader), `config get network` to read it. Unknown settings and malformed lines
 are reported with their line number instead of being ignored.
@@ -374,11 +375,15 @@ review aid rather than tamper-proof evidence.
 - `extensions/pi-security-guard/` — security extension (`index.ts`, `policy.mjs`,
   `backstops.mjs`, `shell.mjs`, `selftest.mjs`, `balanced-excluded.json`,
   `policies/`).
-- `policies/` — vendored `opencode-policy` pattern sets (source for the guard).
+- `policies/` — vendored policy pattern sets (upstream `opencode-policy` source for the guard).
 - `scripts/refresh-policies.sh` — diff/refresh the vendored pattern sets.
 - `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
   `ext-agent.test.mjs`, `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
 - `CHANGELOG.md` — release notes.
+- `docs/` — `config-reference.md` (every setting), `troubleshooting.md`
+  (every `doctor` failure and its fix).
+- `examples/` — `config.example`, `mcp.json.example`, `allow.json.example`,
+  `settings.json.example` (all validated by `tests/ext-agent.test.mjs`).
 
 ## License
 

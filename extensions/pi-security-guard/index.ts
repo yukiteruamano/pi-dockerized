@@ -10,14 +10,15 @@
 // `setting.security_policy`; default "balanced"):
 //   strict   — every vendored pattern is enforced as-is, and tools this policy
 //              does not model (MCP, other extensions) are refused unless listed
-//              in PI_DOCKERIZED_ALLOWED_TOOLS (`setting.allowed_tools`).
+//              in PI_DOCKERIZED_ALLOWED_TOOLS (`setting.allowed_tools`:
+//              `name` or `name:scope+scope`).
 //   balanced — cloud-tenant-specific rules, upstream `admin_bypass` rules and
 //              patterns that fire on ordinary local development are dropped,
 //              while the genuinely dangerous ones stay. (recommended)
 //   off      — vendored patterns are disabled entirely; the built-in backstops
 //              in backstops.mjs stay active.
 //
-// The vendored unsafe/injection pattern sets in ./policies/*.json (ported from
+// The vendored unsafe/injection pattern sets in ./policies/*.json (upstream
 // opencode-policy, MIT — see policies/README.md) are evaluated with the same
 // first-match semantics as upstream (new RegExp(pattern, flags ?? "i")).
 //
@@ -121,7 +122,7 @@ const audit = (tool: string, input: unknown, rule: string | undefined) => {
       rule: rule ?? "unknown",
       target: redact(target),
     });
-    appendFileSync(AUDIT_FILE, line + "\n");
+    appendFileSync(AUDIT_FILE, `${line}\n`);
   } catch {
     // ignore
   }

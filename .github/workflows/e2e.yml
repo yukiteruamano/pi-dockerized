@@ -1,0 +1,55 @@
+name: Nightly e2e
+
+# Exercises the wrapper against a real Docker daemon: full image lifecycle
+# (build + the smoke test in lib/cmd/image.sh), in-container doctor, and the
+# docker-backed wrapper paths the unit tests fake. Weekly and by hand only:
+# it builds the whole image, so it stays out of the per-push CI.
+#
+# Actions are pinned by commit SHA (the tag is in the trailing comment); Renovate
+# keeps them current. Never reference a mutable tag here.
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Build, doctor, dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build (full lifecycle incl. smoke test)
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          pi-dockerized build
+
+      - name: Version and drift
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          pi-dockerized version
+          pi-dockerized config sync --check
+
+      - name: Doctor
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          pi-dockerized doctor
+
+      - name: Dry-run sessions (no daemon side effects beyond the build)
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          mkdir -p /tmp/e2e-proj
+          DRY_RUN=true pi-dockerized run --untrusted /tmp/e2e-proj
+          echo "hi" | DRY_RUN=true pi-dockerized exec --dir /tmp/e2e-proj --timeout 60 -
+          pi-dockerized ps --json
+          pi-dockerized audit --summary
+          pi-dockerized run --list
+
+      - name: Guard regression inside the image
+        run: |
+          docker run --rm --entrypoint node pi-dockerized:latest \
+            /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs

@@ -34,8 +34,7 @@ No package manager files and no build step for the wrapper itself.
   `config.sh` (config + audit) and `help.sh`. **Not executable directly.**
 - `lib/install-lib.sh` + `lib/install/` — Install/uninstall wizard sourced by the
   wrapper (`rc.sh`, `sections.sh`, `uninstall.sh`). **Not executable directly.**
-- `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` (root) — Deprecated compat
-  shims, removed in v1.0.
+- `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` (root) — removed (were deprecated compat shims).
 - `Dockerfile` — Container image (digest-pinned Debian trixie-slim + Node.js/NVM +
   pnpm + uv + Pi + qmd; bakes `container/` and the guard from `extensions/`;
   no extensions are installed at build time).
@@ -51,7 +50,7 @@ No package manager files and no build step for the wrapper itself.
 - `extensions/pi-security-guard/` — Security extension (`index.ts`,
   `policy.mjs`, `backstops.mjs`, `shell.mjs`, `selftest.mjs`,
   `balanced-excluded.json`, `policies/`).
-- `policies/` — Vendored `opencode-policy` pattern sets (source for the guard);
+- `policies/` — vendored policy pattern sets (upstream `opencode-policy` source for the guard);
   `scripts/refresh-policies.sh` refreshes them.
 - `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
   `ext-agent.test.mjs`, `wrapper-args.test.sh`, `wrapper-commands.test.sh`.
@@ -139,7 +138,7 @@ source "$REPO_ROOT/lib/config-lib.sh"
 
 | Type              | Convention         | Examples                                      |
 |-------------------|--------------------|-----------------------------------------------|
-| Shell scripts     | kebab-case / no ext in bin/ | `bin/pi-dockerized`, `run-simple.sh` |
+| Shell scripts     | kebab-case / no ext in bin/ | `bin/pi-dockerized`, `install.sh` |
 | Functions         | snake_case         | `check_docker()`, `build_image()`             |
 | Constants         | UPPER_SNAKE        | `IMAGE_NAME`, `REPO_ROOT`, `CONFIG_DIR`       |
 | Local variables   | lower_snake        | `project_dir`, `container_name`               |

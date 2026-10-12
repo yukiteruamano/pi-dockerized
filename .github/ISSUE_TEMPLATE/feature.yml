@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a wrapper, guard or docs change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What hurts today, with a concrete example
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change (command, flag, rule, doc). Small, verifiable diffs win.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: User-visible (needs README/CHANGELOG/help updates)
+        - label: Touches the guard or policies (needs a GUARD_VERSION bump + tests)

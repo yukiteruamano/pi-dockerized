@@ -36,7 +36,7 @@ baked security extension (`extensions/pi-security-guard/`).
 | Update verification | `update` lists the incoming commits first; `--verify` / `setting.verify_updates=true` requires a valid signature on the upstream head (`git verify-commit`) |
 | Output hygiene | Control characters are stripped from everything the wrapper prints (a directory or config value cannot inject terminal escapes); errors and warnings go to stderr |
 | Private state | The state tree is `0700` and its token files `0600` |
-| Policy patterns | The vendored `opencode-policy` pattern sets, evaluated by `extensions/pi-security-guard/policy.mjs` (see `policies/README.md`) |
+| Policy patterns | The vendored policy pattern sets (upstream `opencode-policy`), evaluated by `extensions/pi-security-guard/policy.mjs` (see `policies/README.md`) |
 | SSH agent forwarding (opt-in) | `setting.ssh_agent_support=true` forwards only `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys (`id_*`, `*.pem`, `*.key`) are never mounted, and a custom mount of `~/.ssh` is refused |
 | GnuPG agent forwarding (opt-in) | `setting.gpg_agent_support=true` mirrors only the public keyring (`pubring.kbx` / `public-keys.d`) and forwards the host `gpg-agent` socket (preferring the restricted `S.gpg-agent.extra`); `private-keys-v1.d/` is never copied or mounted, and a custom mount of `~/.gnupg` is refused |
 | No self-update | `PI_SKIP_VERSION_CHECK=1` and the guard block `pi update` |

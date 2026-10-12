@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
-# Refresh the vendored opencode-policy pattern sets (policies/*.json) from the
-# upstream npm package: fetch a release, show exactly what changed, and only
+# Refresh the vendored policy pattern sets (policies/*.json) from the
+# upstream opencode-policy npm package: fetch a release, show exactly what changed, and only
 # with --apply copy the files, bump policies/VERSION and run the guard tests.
 #
-# Usage: scripts/refresh-policies.sh [--version X] [--from DIR|TARBALL] [--apply]
+# Usage: scripts/refresh-policies.sh [--version X] [--from DIR|TARBALL] [--apply] [--no-verify]
 #   --version X   upstream release to fetch (default: latest)
 #   --from PATH   use an unpacked directory or .tgz instead of fetching
 #   --apply       write the changes (default: report only)
+#   --no-verify   skip the registry integrity check (not recommended)
 #
 # After --apply, bump GUARD_VERSION in extensions/pi-security-guard/policy.mjs
 # (behavior changed) and update policies/README.md if the upstream version moved.
@@ -21,6 +22,7 @@ FILES=(unsafe-tool-patterns.json prompt-injection-patterns.json)
 version="latest"
 source_path=""
 apply=false
+verify=true
 
 usage() {
     sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -37,6 +39,8 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     --apply) apply=true ;;
+    --verify) verify=true ;;
+    --no-verify) verify=false ;;
     -h | --help)
         usage
         exit 0
@@ -66,6 +70,37 @@ if [ -z "$source_path" ]; then
         exit 1
     }
     (cd "$work" && npm pack "opencode-policy@$version" --silent >/dev/null)
+    tgz=$(echo "$work"/opencode-policy-*.tgz)
+    resolved=$(npm view "opencode-policy@$version" version 2>/dev/null) || resolved=""
+    if [ -n "$resolved" ]; then
+        pinned="$(cat "$POLICIES_DIR/.upstream-version" 2>/dev/null || true)"
+        if [ -n "$pinned" ] && [ "$pinned" != "$resolved" ]; then
+            echo "Upstream moved since the last refresh: $pinned -> $resolved"
+        elif [ -z "$pinned" ]; then
+            echo "Upstream version: $resolved"
+        fi
+    fi
+    if [ "$verify" = true ]; then
+        want=$(npm view "opencode-policy@$version" dist.integrity 2>/dev/null) || want=""
+        if [ -z "$want" ]; then
+            echo "error: cannot read dist.integrity for opencode-policy@$version; refusing unverified fetch (use --no-verify to override)" >&2
+            exit 1
+        fi
+        got=$(node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            import { readFileSync } from "node:fs";
+            const b64 = createHash("sha512").update(readFileSync(process.argv[1])).digest("base64");
+            process.stdout.write("sha512-" + b64);
+        ' "$tgz") || {
+            echo "error: cannot hash the fetched tarball" >&2
+            exit 1
+        }
+        if [ "$got" != "$want" ]; then
+            echo "error: integrity mismatch for $tgz (registry says $want)" >&2
+            exit 1
+        fi
+        echo "Verified $tgz against the registry."
+    fi
     tar -xzf "$work"/opencode-policy-*.tgz -C "$work/src"
 elif [ -d "$source_path" ]; then
     cp -R "$source_path"/. "$work/src/"
@@ -133,6 +168,9 @@ fi
 
 current="$(tr -d '[:space:]' <"$POLICIES_DIR/VERSION")"
 echo "$((current + 1))" >"$POLICIES_DIR/VERSION"
+if [ -n "${resolved:-}" ]; then
+    echo "$resolved" >"$POLICIES_DIR/.upstream-version"
+fi
 echo
 echo "Applied. policies/VERSION: $current -> $((current + 1))"
 

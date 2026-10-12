@@ -5,6 +5,63 @@ Notable changes per release. The wrapper version is `WRAPPER_VERSION` in
 `extensions/pi-security-guard/policy.mjs` (shown by `pi-dockerized version`).
 Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
+## Unreleased
+
+### Security (guard 5)
+
+- Scoped strict allowlist: `setting.allowed_tools` entries can be `name` (as
+  before) or `name:scope+scope`, restricting an unknown tool to inputs
+  containing a scope (`mcp_fetch:example.com`). Out-of-scope calls are blocked
+  as `backstop/unknown-tool-scope`.
+- Guard evaluation caps each value at 16 KiB (not just the joined total), so
+  one huge field can no longer reach the quadratic matchers; compiled patterns
+  are shared across loads.
+- Forwarded SSH/GPG sockets must be owned by you, enforced at the mount site.
+- `scripts/refresh-policies.sh` verifies the tarball against the registry's
+  `dist.integrity` (fail-closed, `--no-verify` to skip) and records the
+  upstream version in `policies/.upstream-version`.
+- Sessions warn (never block) when the project contains credential-looking
+  files (`.env`, `*.pem`, keys), listed by name in the `Exposure:` output.
+
+### Added
+
+- `run --resume [ID]` / `run --list`: resume Pi sessions (`--session`/
+  `--resume` passthrough) and list local ones without a container.
+- `run`/`shell`/`exec` take `--timeout` (e.g. `5m`); refusal (not silence)
+  when `timeout(1)` is missing.
+- `ps --json` (one object per line) and `stats --json` (local session files).
+- `config get <key> --source` and `config show --sources` (config file/default).
+- `doctor --fix`: host-state repair via `config sync`, then diagnose as usual.
+- `audit --explain [N]`: what rule fired, why, and how to proceed.
+- `build --fresh` (pull a newer base), build timestamp label with a >90-day
+  staleness warning, best-effort local SBOM on promote, and a stricter smoke
+  test (no `sudo`, loose host settings rejected).
+- `update`/`upgrade` roll the code back after a failed rebuild (never with a
+  dirty worktree, never non-interactively without `--yes`).
+- `stop --all` asks for confirmation (`--yes`/`--force` for scripts) and
+  suggests similar names for unknown sessions.
+- `exec`/`models` separate dash-leading input with `--` so it cannot parse as
+  a Pi flag (trailing Pi flags keep working).
+- Stable exit codes: 2 usage/project, 3 config, 4 Docker/image, 5 guard refusal.
+- Config backups: every write keeps a timestamped copy (last 5).
+- Docs: `docs/config-reference.md`, `docs/troubleshooting.md`, validated
+  `examples/{mcp,allow,settings}.json.example`, issue/PR templates, and a
+  weekly Docker e2e workflow.
+
+### Changed
+
+- Guard block messages now say `pi-policy/<id>` (was `opencode-policy/<id>`);
+  remaining `opencode-policy` mentions refer to the upstream package only.
+- Fuzz corpus for shell de-obfuscation locked in as regression tests.
+- Completions cover the new flags and no longer break with `--profile`; CI
+  gains advisory `shfmt`/`actionlint` steps.
+
+### Removed (breaking)
+
+- `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` are deleted (were deprecated
+  compat shims slated for v1.0). Use `bin/pi-dockerized` on PATH
+  (`pi-dockerized install` sets it up).
+
 ## 0.16.0 — guard 4
 
 ### Security

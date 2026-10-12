@@ -137,7 +137,7 @@ assert_contains "$common" "--group-add coder" "coder group must be added"
 assert_contains "$common" "PI_CODING_AGENT_DIR=/home/coder/.pi/agent" "agent dir env must be set"
 assert_contains "$common" "PI_SKIP_VERSION_CHECK=1" "self-update check must be disabled"
 assert_contains "$common" "PI_DOCKERIZED_POLICY=balanced" "policy mode must be forwarded"
-assert_not_contains "$common" "OPENCODE_CONFIG_CONTENT" "OpenCode config must not be used"
+assert_not_contains "$common" "OPENCODE_CONFIG_CONTENT" "legacy OpenCode config must not be used"
 
 # --- Env-file containment ----------------------------------------------------
 # A secrets file outside $CONFIG_DIR must be refused.
@@ -255,6 +255,31 @@ if PATH="$FAKE_BIN:$PATH" "$REPO_DIR/bin/pi-dockerized" update --pi-version >/de
     fail "update must reject --pi-version without a value"
 fi
 
+# --- Failed-build code rollback --------------------------------------------------
+# Throwaway repos only: the real checkout is never reset.
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/cmd/update.sh"
+if command -v git >/dev/null 2>&1; then
+    RB="$TMP/rb"
+    mkdir -p "$RB"
+    git -c init.defaultBranch=main -C "$RB" init -q
+    git -C "$RB" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+    REV1=$(git -C "$RB" rev-parse HEAD)
+    echo two >"$RB/f"
+    git -C "$RB" add f
+    git -C "$RB" -c user.email=t@t -c user.name=t commit -q -m two
+    # with --yes a failed build rolls the code back to prev
+    (REPO_ROOT="$RB" _UP_YES=true rollback_code_after_failed_build "$REV1" >/dev/null 2>&1) || true
+    [ "$(git -C "$RB" rev-parse HEAD)" = "$REV1" ] || fail "with --yes a failed build must roll the code back"
+    # dirty worktree is never reset
+    echo three >"$RB/f"
+    git -C "$RB" add f
+    git -C "$RB" -c user.email=t@t -c user.name=t commit -q -m three
+    echo dirty >"$RB/dirty"
+    (REPO_ROOT="$RB" _UP_YES=true rollback_code_after_failed_build "$REV1" >/dev/null 2>&1) && fail "rollback must refuse a dirty worktree"
+    [ -f "$RB/dirty" ] || fail "a dirty worktree must be left untouched"
+fi
+
 # --- Container-sync refusal --------------------------------------------------
 # Only meaningful where a container marker exists (CI runners are bare metal).
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
@@ -265,5 +290,88 @@ if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
         fail "sync must be host-only inside a container"
     fi
 fi
+
+# --- Mount-policy escapes ------------------------------------------------------
+# A symlink pointing at $HOME must not slip past the literal-path check.
+ln -s "$HOME" "$TMP/evil-home"
+if validate_mount_source "$TMP/evil-home" "evil" >/dev/null 2>&1; then
+    fail "a symlink to HOME must be refused as a mount source"
+fi
+if validate_mount_source "$HOME/.ssh" "evil" >/dev/null 2>&1; then
+    fail "~/.ssh must be refused as a mount source"
+fi
+# A project that would land on /etc in the container must be refused.
+if validate_container_path "/etc" "project" >/dev/null 2>&1; then
+    fail "/etc must be refused as a container path"
+fi
+
+# --- Forwarding-socket ownership ------------------------------------------------
+# A regular file is not a socket and must never be forwarded.
+touch "$TMP/not-a-socket"
+if forwarding_socket_ok "$TMP/not-a-socket" "test" >/dev/null 2>&1; then
+    fail "a non-socket must be refused for forwarding"
+fi
+# A socket owned by this user is fine.
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('$TMP/owned.sock')"
+forwarding_socket_ok "$TMP/owned.sock" "test" >/dev/null 2>&1 || fail "an owned socket must be accepted for forwarding"
+
+# --- Settings values containing '=' -------------------------------------------------
+config_upsert "setting.model" "a=b"
+grep -q '^setting\.model=a=b$' "$CONFIG_FILE" || fail "values containing = must survive config_upsert"
+
+# --- config get --source -------------------------------------------------------
+config_set_value "theme" "dark" >/dev/null
+src_out=$(config_get_value theme --source)
+assert_contains "$src_out" "dark" "get --source prints the value"
+assert_contains "$src_out" "(config file)" "get --source reports the config file"
+src_out=$(config_get_value network --source)
+assert_contains "$src_out" "(config file)" "seeded keys report the config file"
+grep -v '^setting\.memory=' "$CONFIG_FILE" >"$TMP/cfg-stripped" && mv "$TMP/cfg-stripped" "$CONFIG_FILE"
+load_config >/dev/null 2>&1 || true
+src_out=$(config_get_value memory --source)
+assert_contains "$src_out" "(default)" "get --source reports defaults"
+
+# --- State permissions -------------------------------------------------------
+harden_state_permissions
+[ "$(stat -c %a "$PI_HOME/.pi/agent")" = 700 ] || fail "agent dir must be 0700"
+[ "$(stat -c %a "$AGENT/audit.log")" = 600 ] || fail "audit.log must be 0600"
+
+# --- Project-secret warning ----------------------------------------------------
+SESSION_PROJECT="$PROJECT"
+touch "$PROJECT/.env" "$PROJECT/creds.pem" "$PROJECT/.env.example"
+secret_warn=$(warn_project_secrets 2>&1)
+assert_contains "$secret_warn" ".env" "warning must name the .env file"
+assert_contains "$secret_warn" "creds.pem" "warning must name the .pem file"
+assert_not_contains "$secret_warn" ".env.example" "warning must ignore *.example templates"
+rm -f "$PROJECT/.env" "$PROJECT/creds.pem" "$PROJECT/.env.example"
+empty_warn=$(warn_project_secrets 2>&1)
+[ -z "$empty_warn" ] || fail "warning must stay silent without secrets (got: $empty_warn)"
+SESSION_PROJECT=""
+
+# --- Docs coverage ---------------------------------------------------------------
+# docs/config-reference.md must document every setting (single source: SETTING_KEYS).
+ref_file="$REPO_DIR/docs/config-reference.md"
+[ -f "$ref_file" ] || fail "docs/config-reference.md is missing"
+for _k in "${SETTING_KEYS[@]}"; do
+    grep -q "\`$_k\`" "$ref_file" || fail "docs/config-reference.md misses setting.$_k"
+done
+unset _k
+
+# --- Completion smoke test ---------------------------------------------------
+# The second-level branches must work with and without the global --profile.
+# shellcheck source=/dev/null
+source "$REPO_DIR/completions/bash.sh"
+COMP_WORDS=(pi-dockerized config get "")
+COMP_CWORD=3
+_pi_dockerized
+assert_contains "${COMPREPLY[*]}" "theme" "completion must offer settings after 'config get'"
+COMP_WORDS=(pi-dockerized --profile work config get "")
+COMP_CWORD=5
+_pi_dockerized
+assert_contains "${COMPREPLY[*]}" "theme" "completion must offer settings with --profile"
+COMP_WORDS=(pi-dockerized stop "")
+COMP_CWORD=2
+_pi_dockerized
+assert_contains "${COMPREPLY[*]}" "--all" "completion must offer --all for stop"
 
 echo "All wrapper-args tests passed."

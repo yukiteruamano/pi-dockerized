@@ -21,11 +21,11 @@ resolve_project_dir() {
     local dir="$1"
     if [ ! -d "$dir" ]; then
         print_error "Project directory does not exist: $dir"
-        exit 1
+        exit "$E_USAGE"
     fi
     # A symlink to $HOME or / must not slip past validate_project_dir.
     dir="$(cd "$dir" && pwd -P)"
-    validate_project_dir "$dir" || exit 1
+    validate_project_dir "$dir" || exit "$E_USAGE"
     printf '%s' "$dir"
 }
 
@@ -41,10 +41,17 @@ prepare_session() {
         SESSION_PROJECT="$project_dir"
     fi
 
-    check_image "$IMAGE_NAME" || exit 1
+    check_image "$IMAGE_NAME" || exit "$E_DOCKER"
     ensure_pi_dirs
     parse_config
     apply_session_overrides || exit 1
+
+    # A requested time limit must actually apply: refusing is safer than
+    # silently running without one.
+    if [ -n "${SESSION_TIMEOUT:-}" ] && ! command -v timeout >/dev/null 2>&1; then
+        print_error "--timeout needs the 'timeout' command (GNU coreutils)."
+        exit "$E_USAGE"
+    fi
 
     local socket=false
     [ "$socket_policy" = config ] && socket="$DOCKER_SOCKET"
@@ -92,6 +99,10 @@ build_session_cmd() {
         "$IMAGE_NAME"
         "$@"
     )
+    # A session time limit wraps the whole docker invocation (DRY_RUN shows it).
+    if [ -n "${SESSION_TIMEOUT:-}" ]; then
+        DOCKER_CMD=(timeout --foreground "$SESSION_TIMEOUT" "${DOCKER_CMD[@]}")
+    fi
 }
 
 # Stop the per-session GnuPG relay (a no-op when none is running).
@@ -154,10 +165,55 @@ run_doctor() {
     run_cli_command doctor "" never /usr/local/lib/pi-dockerized/doctor.sh
 }
 
+# List local Pi sessions (short id, start time) without starting a container.
+# Filenames already carry `<timestamp>_<id>`; no JSON parsing needed.
+# Usage: list_pi_sessions
+list_pi_sessions() {
+    local dir="$PI_HOME/.pi/agent/sessions" f base ts id
+    if [ ! -d "$dir" ]; then
+        print_info "No sessions yet."
+        return 0
+    fi
+    local found=false
+    for f in "$dir"/*.jsonl; do
+        [ -e "$f" ] || continue
+        if [ "$found" = false ]; then
+            printf '%-10s  %-22s  %s\n' "SESSION" "STARTED" "PROJECT"
+            found=true
+        fi
+        base=$(basename "$f" .jsonl)
+        ts=${base%%_*}
+        id=${base#*_}
+        printf '%-10s  %-22s  %s\n' "${id:0:8}" "$ts" "$(session_project "$f")"
+    done
+    if [ "$found" = false ]; then
+        print_info "No sessions yet."
+    else
+        print_info "Resume with '$0 run --resume <session>' (partial id is enough)."
+    fi
+}
+
+# Project directory recorded in a session file's first line, or "-" when the
+# file is unreadable (best-effort: never fail the listing on one bad file).
+# Usage: session_project <file>
+session_project() {
+    local cwd
+    cwd=$(grep -o '"cwd":"[^"]*"' "$1" 2>/dev/null | head -n 1 | cut -d'"' -f4) || cwd=""
+    if [ -n "$cwd" ]; then
+        printf '%s' "$cwd"
+    else
+        printf '-'
+    fi
+}
+
 # Function to run Pi
-# Usage: run_pi [--policy P] [--network N] [--untrusted] [DIR]
+# Usage: run_pi [--policy P] [--network N] [--untrusted] [--resume [ID]] [--list] [DIR]
 run_pi() {
     parse_session_flags "$@" || exit 1
+    if [ "${SESSION_LIST:-false}" = true ]; then
+        list_pi_sessions
+        return 0
+    fi
     set -- "${SESSION_REST[@]}"
     local project_dir="${1:-${SESSION_DIR:-$(pwd)}}"
 
@@ -175,6 +231,15 @@ run_pi() {
 
     local -a pi_args=()
     build_pi_args pi_args
+    # Resume a previous session (stored on the host, mounted into the
+    # container): bare --resume opens Pi's picker, --resume ID jumps to it.
+    if [ -n "${SESSION_RESUME:-}" ]; then
+        if [ "$SESSION_RESUME" = select ]; then
+            pi_args+=(--resume)
+        else
+            pi_args+=(--session "$SESSION_RESUME")
+        fi
+    fi
     build_session_cmd "$container_name" yes pi "${pi_args[@]}"
 
     if [ "${DRY_RUN:-false}" = true ]; then
@@ -238,6 +303,12 @@ exec_prompt() {
         print_error "A message is required: $0 exec [--dir DIR] \"<message>\" [OPTIONS]  (or pipe it on stdin)"
         exit 1
     fi
+    # A message starting with `-` would parse as a pi flag: separate it with
+    # `--`, but only then, so trailing pi flags (`exec "msg" --model x`) keep
+    # working as flags.
+    if [[ "${pi_args[0]}" == -* ]]; then
+        pi_args=(-- "${pi_args[@]}")
+    fi
 
     run_cli_command exec "${SESSION_DIR:-$(pwd)}" config pi --print "${pi_args[@]}"
 }
@@ -262,7 +333,11 @@ list_models() {
     parse_config
     local -a extra=(--list-models)
     if [ -n "${1:-}" ]; then
-        extra=(--list-models "$1")
+        # `--` so a search starting with `-` is a filter, not a pi flag.
+        if [[ "$1" == -* ]]; then
+            extra+=(--)
+        fi
+        extra+=("$1")
     elif [ -n "$MODEL" ]; then
         extra=(--list-models "$MODEL")
     fi
@@ -271,6 +346,20 @@ list_models() {
 
 # Function to show session usage statistics (best-effort via RPC).
 show_stats() {
+    if [ "${1:-}" = "--json" ]; then
+        # Local session files as JSON (the RPC path below stays human-readable
+        # best-effort: its schema belongs to Pi, not to this wrapper).
+        local dir="$PI_HOME/.pi/agent/sessions" f first=true
+        printf '{"sessions_dir":"%s","sessions":[' "$(json_escape "$dir")"
+        for f in "$dir"/*; do
+            [ -e "$f" ] || continue
+            [ "$first" = true ] || printf ','
+            first=false
+            printf '"%s"' "$(json_escape "$(basename "$f")")"
+        done
+        printf ']}\n'
+        return 0
+    fi
     # Pi exposes session metrics over its RPC interface (get_session_stats).
     # Best-effort: send the command and let Pi exit on stdin EOF.
     run_cli_command stats "" never bash -c \
@@ -307,29 +396,97 @@ running_sessions() {
 }
 
 # List running sessions with their project and status.
+# Usage: list_sessions [--json]  (--json prints one object per line)
 list_sessions() {
-    docker ps --filter "label=pi-dockerized=1" \
-        --format 'table {{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.project"}}'
+    if [ "${1:-}" = "--json" ]; then
+        docker ps --filter "label=pi-dockerized=1" \
+            --format '{{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.project"}}' |
+            while IFS="$(printf '\t')" read -r name status project; do
+                [ -n "$name" ] || continue
+                printf '{"name":"%s","status":"%s","project":"%s"}\n' \
+                    "$(json_escape "$name")" "$(json_escape "$status")" "$(json_escape "$project")"
+            done
+    else
+        docker ps --filter "label=pi-dockerized=1" \
+            --format 'table {{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.project"}}'
+    fi
 }
 
-# Stop one running session by name, or every one with --all.
-# Usage: stop_sessions <NAME|--all>
+# Stop one running session by exact name, or every one with --all.
+# --all asks for confirmation unless --yes/--force is given (scripts must
+# opt in: stopping every session by accident hurts).
+# Usage: stop_sessions [--yes|--force] <NAME|--all>
 stop_sessions() {
-    local target="${1:-}" name
-    local -a names=()
+    local force=false target="" a name
+    for a in "$@"; do
+        case "$a" in
+        --yes | --force) force=true ;;
+        --all)
+            if [ -n "$target" ]; then
+                print_error "Usage: $0 stop [--yes] <NAME|--all>"
+                exit 1
+            fi
+            target="--all"
+            ;;
+        --*)
+            print_error "Unknown stop option: $a (use --yes/--force)"
+            exit 1
+            ;;
+        *)
+            if [ -n "$target" ]; then
+                print_error "Usage: $0 stop [--yes] <NAME|--all>"
+                exit 1
+            fi
+            target="$a"
+            ;;
+        esac
+    done
     if [ -z "$target" ]; then
-        print_error "Usage: $0 stop <NAME|--all>  (see '$0 ps' for names)"
+        print_error "Usage: $0 stop [--yes] <NAME|--all>  (see '$0 ps' for names)"
         exit 1
     fi
+    local -a names=() all=()
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if [ "$target" = "--all" ] || [ "$target" = "$name" ]; then
-            names+=("$name")
-        fi
+        all+=("$name")
     done < <(running_sessions)
-    if [ "${#names[@]}" -eq 0 ]; then
-        print_info "No matching running session."
-        return 0
+    if [ "$target" = "--all" ]; then
+        names=("${all[@]}")
+        if [ "${#names[@]}" -eq 0 ]; then
+            print_info "No running sessions."
+            return 0
+        fi
+        if [ "$force" != true ]; then
+            local ans=""
+            if [ -t 0 ]; then
+                read -r -p "Stop ${#names[@]} session(s) (${names[*]})? [y/N] " ans || ans=""
+            fi
+            case "$ans" in
+            [Yy] | [Yy]es) ;;
+            *)
+                print_error "Aborted: pass --yes to stop ${#names[@]} session(s)."
+                exit 1
+                ;;
+            esac
+        fi
+    else
+        for name in "${all[@]}"; do
+            [ "$name" = "$target" ] && names+=("$name")
+        done
+        if [ "${#names[@]}" -eq 0 ]; then
+            local -a similar=()
+            for name in "${all[@]}"; do
+                case "$name" in
+                "$target"* | *"$target"*) similar+=("$name") ;;
+                esac
+            done
+            if [ "${#similar[@]}" -gt 0 ]; then
+                print_error "No session named '$target'. Did you mean: ${similar[*]}?"
+            else
+                print_error "No session named '$target' (see '$0 ps' for names)."
+            fi
+            exit 1
+        fi
     fi
     docker stop "${names[@]}" >/dev/null
     print_success "Stopped: ${names[*]}"

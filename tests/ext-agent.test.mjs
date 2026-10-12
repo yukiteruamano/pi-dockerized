@@ -132,6 +132,23 @@ check("unknown command fails", run(["frobnicate", dir]).status === 1);
 check("missing target fails", run(["seed"]).status === 1);
 check("no leftover files in the seeded directory", !existsSync(join(root, "seed", "settings.json.lock")));
 
+// --- examples stay valid ----------------------------------------------------------------------------
+// (kills the drift between examples/ and the enforced shapes)
+const exDir = join(here, "..", "examples");
+check(
+  "settings example passes check --host",
+  run(["check", join(exDir, "settings.json.example"), "--host"]).status === 0,
+);
+{
+  const mcp = JSON.parse(readFileSync(join(exDir, "mcp.json.example"), "utf8"));
+  check("mcp example has an mcpServers object", mcp && typeof mcp.mcpServers === "object");
+  const allow = JSON.parse(readFileSync(join(exDir, "allow.json.example"), "utf8"));
+  check(
+    "allow example is a rule array",
+    Array.isArray(allow) && allow.every((r) => typeof r.id === "string" && typeof r.pattern === "string"),
+  );
+}
+
 rmSync(root, { recursive: true, force: true });
 
 if (failures > 0) {

@@ -136,7 +136,7 @@ _setting_spec() {
     verify_updates) echo "VERIFY_UPDATES bool" ;;
     network) echo "NETWORK enum host,bridge host" ;;
     security_policy) echo "SECURITY_POLICY enum strict,balanced,off balanced" ;;
-    allowed_tools) echo "ALLOWED_TOOLS re ^[A-Za-z0-9_.:,-]*$" ;;
+    allowed_tools) echo "ALLOWED_TOOLS re ^[A-Za-z0-9_.:,+*=-]*$" ;;
     memory) echo "MEMORY re ^([0-9]+[bBkKmMgG])?$" ;;
     cpus) echo "CPUS re ^([0-9]+(\\.[0-9]+)?)?$" ;;
     theme) echo "THEME re ^[A-Za-z0-9_-]*$" ;;
@@ -150,6 +150,7 @@ _setting_spec() {
 reset_settings() {
     CUSTOM_MOUNTS=()
     CUSTOM_MOUNT_KEYS=()
+    SETTINGS_FROM_FILE=()
     SSH_AGENT_SUPPORT=false
     GPG_AGENT_SUPPORT=false
     GPG_ALLOW_MAIN_SOCKET=false
@@ -262,6 +263,8 @@ load_config() {
             rc=$?
             if [ "$rc" -eq 2 ]; then
                 config_warning "config line $lineno: unknown setting '${key#setting.}' (ignored)"
+            elif [ "$rc" -eq 0 ]; then
+                SETTINGS_FROM_FILE+=("$(_setting_key "${key#setting.}")")
             fi
             ;;
         *)
@@ -294,12 +297,27 @@ next_custom_key() {
     done
 }
 
+# Copy the config file to a timestamped backup, keeping the last 5. Runs at
+# most once per process (bulk saves call config_upsert once per key); a no-op
+# when the file does not exist yet.
+CONFIG_BACKED_UP=false
+backup_config_file() {
+    [ "$CONFIG_BACKED_UP" = true ] && return 0
+    CONFIG_BACKED_UP=true
+    [ -f "$CONFIG_FILE" ] || return 0
+    local backup
+    backup="$CONFIG_FILE.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$CONFIG_FILE" "$backup" 2>/dev/null || return 0
+    ls -t "$CONFIG_FILE".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f --
+}
+
 # Set <full_key>=<value> in the config file, in place. The first active line is
 # updated (later duplicates dropped); otherwise the first commented template
 # `# <full_key>=...` becomes the active line; otherwise the line is appended.
 # Comments and entries it does not know about are left alone.
 # Usage: config_upsert <full_key> <value>
 config_upsert() {
+    backup_config_file
     local full="$1" value="$2"
     local -a lines=() out=()
     [ -f "$CONFIG_FILE" ] && mapfile -t lines <"$CONFIG_FILE"
@@ -387,18 +405,44 @@ _setting_key() {
     printf '%s' "${1#setting.}"
 }
 
+# Where the current value of <key> comes from: "config file" or "default".
+# Usage: setting_source <key>
+setting_source() {
+    local key k
+    key=$(_setting_key "$1") || return 1
+    for k in "${SETTINGS_FROM_FILE[@]}"; do
+        [ "$k" = "$key" ] && {
+            echo "config file"
+            return 0
+        }
+    done
+    echo "default"
+}
+
 # Print the value of a setting from the config file.
-# Usage: config_get_value <key>
+# Usage: config_get_value <key> [--source]
 config_get_value() {
-    local key
+    local key with_source=false
     key=$(_setting_key "$1")
     if ! _setting_spec "$key" >/dev/null; then
         config_error "Unknown setting '$key'. Known: ${SETTING_KEYS[*]}"
         return 1
     fi
+    case "${2:-}" in
+    "") ;;
+    --source) with_source=true ;;
+    *)
+        config_error "Usage: $0 config get <setting> [--source]"
+        return 1
+        ;;
+    esac
     load_config >/dev/null 2>&1 || true
-    _get_setting "$key"
-    echo
+    if [ "$with_source" = true ]; then
+        printf '%s  (%s)\n' "$(_get_setting "$key")" "$(setting_source "$key")"
+    else
+        _get_setting "$key"
+        echo
+    fi
 }
 
 # Validate and persist one setting.

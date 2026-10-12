@@ -87,8 +87,16 @@ main() {
 
     case "$command" in
     run)
-        check_docker
-        check_config
+        # `run --list` only reads local session files: no daemon needed.
+        case " $* " in
+        *" --list "*)
+            check_config
+            ;;
+        *)
+            check_docker
+            check_config
+            ;;
+        esac
         run_pi "$@"
         ;;
     auth)
@@ -123,6 +131,16 @@ main() {
     debug | doctor)
         # Pi has no `debug` subcommand; map it to doctor for convenience.
         check_docker
+        if [ "${1:-}" = "--fix" ]; then
+            # Host-side repairs only (permissions, missing dirs/files): sync
+            # never edits mcp.json content or secrets. Then diagnose as usual.
+            parse_config || true
+            print_info "Repairing host state..."
+            sync_pi_state || exit 1
+        elif [ -n "${1:-}" ]; then
+            print_error "Usage: $0 doctor [--fix]"
+            exit 1
+        fi
         run_doctor
         ;;
     audit)
@@ -131,7 +149,7 @@ main() {
         ;;
     ps)
         check_docker
-        list_sessions
+        list_sessions "$@"
         ;;
     stop)
         check_docker

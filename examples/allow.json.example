@@ -1,0 +1,7 @@
+[
+  {
+    "id": "lab-nmap",
+    "pattern": "^nmap 10\\.0\\.0\\.1$",
+    "reason": "lab network scanner on the bench host"
+  }
+]

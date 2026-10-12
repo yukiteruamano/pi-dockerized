@@ -33,6 +33,17 @@ check_image_drift() {
         [ "$(image_label "$IMAGE_NAME" pi-dockerized.docker-cli)" = false ]; then
         print_warning "setting.docker_socket is on but the image has no Docker CLI: run '$0 build'."
     fi
+    local created created_epoch now age_days
+    created=$(image_label "$IMAGE_NAME" org.opencontainers.image.created)
+    if [ -n "$created" ] && [ "$created" != "<no value>" ]; then
+        now=$(date +%s)
+        if created_epoch=$(date -d "$created" +%s 2>/dev/null) && [ "$now" -gt "$created_epoch" ]; then
+            age_days=$(((now - created_epoch) / 86400))
+            if [ "$age_days" -gt 90 ]; then
+                print_warning "The image is $age_days days old (built $created): run '$0 build' to pick up base-image security fixes."
+            fi
+        fi
+    fi
 }
 
 # Boot checks run inside a freshly built or pulled image before it is promoted:
@@ -51,6 +62,13 @@ d=$(mktemp -d)
 node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d" >/dev/null || { echo "ext-agent seed failed"; exit 1; }
 node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$d/settings.json" || exit 1
 PI_CODING_AGENT_DIR="$d" pi list >/dev/null 2>&1 || { echo "pi list fails on a seeded ext-agent directory"; exit 1; }
+# Sandbox invariants: no privilege escalation binary, and a host settings.json
+# carrying anything but preferences must be rejected.
+command -v sudo >/dev/null 2>&1 && { echo "sudo must not exist in the image"; exit 1; }
+d2=$(mktemp -d)
+node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d2" >/dev/null || { echo "ext-agent seed failed"; exit 1; }
+jq ". + {piDockerizedEvil: true}" "$d2/settings.json" > "$d2/loose.json" && mv "$d2/loose.json" "$d2/settings.json"
+node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$d2/settings.json" --host >/dev/null 2>&1 && { echo "loose host settings accepted"; exit 1; }
 echo "$v"
 '
 
@@ -73,6 +91,21 @@ image_version_tag() {
     printf '%s-guard%s' "$WRAPPER_VERSION" "${guard:-0}"
 }
 
+# Best-effort local SBOM for the promoted image (CI already publishes one
+# for prebuilt images). Never fails the build: old Docker versions lack it.
+# Usage: write_sbom <image>
+write_sbom() {
+    local image="$1" sbom_dir="$PI_HOME/sbom" out
+    command -v docker >/dev/null 2>&1 || return 0
+    mkdir -p "$sbom_dir" 2>/dev/null || return 0
+    out="$sbom_dir/$(echo "$image" | tr -cd '[:alnum:]._-').spdx.json"
+    if docker sbom --format spdx-json -o "$out" "$image" >/dev/null 2>&1; then
+        print_info "SBOM written to $out"
+    else
+        print_info "SBOM skipped (docker sbom unavailable)"
+    fi
+}
+
 # Make a tested image the current one, keeping the one it replaces.
 # Usage: promote_image <tag-or-ref>
 promote_image() {
@@ -86,12 +119,13 @@ promote_image() {
     # Drops only the candidate's own tag; the image lives on under the others.
     docker rmi "$candidate" >/dev/null 2>&1 || true
     print_success "Image ready: $IMAGE_NAME (also $IMAGE_REPO:$vtag; the replaced one is $IMAGE_REPO:previous)"
+    write_sbom "$IMAGE_NAME"
 }
 
 # Build the image, smoke-test it and promote it.
-# Usage: build_image [--pi-version X|latest] [--bust-cache]
+# Usage: build_image [--pi-version X|latest] [--bust-cache] [--fresh]
 build_image() {
-    local pi_version="" bust=false
+    local pi_version="" bust=false fresh=false
     while [ $# -gt 0 ]; do
         case "$1" in
         --pi-version)
@@ -99,6 +133,7 @@ build_image() {
             shift
             ;;
         --bust-cache) bust=true ;;
+        --fresh) fresh=true ;;
         *)
             print_error "Unknown build option: $1"
             return 1
@@ -121,8 +156,13 @@ build_image() {
         --build-arg "INSTALL_DOCKER_CLI=$cli"
     )
     [ -n "$pi_version" ] && args+=(--build-arg "PI_VERSION=$pi_version")
+    # Build timestamp as an OCI label so check_image_drift can warn about
+    # stale base images (kept out of the Dockerfile to avoid busting its cache).
+    args+=(--label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
     # Only `update` busts the cache, so the requested Pi release is re-fetched.
+    # --fresh also pulls a newer base image instead of reusing cached layers.
     [ "$bust" = true ] && args+=(--build-arg "PI_BUILD_TIME=$(date +%s)")
+    [ "$fresh" = true ] && args+=(--pull)
 
     print_info "Building Pi Docker image..."
     if ! docker build "${args[@]}" -t "$candidate" "$REPO_ROOT"; then
@@ -221,7 +261,7 @@ clean_image() {
 
 # Wrapper, image, guard, policy-set and Pi versions at a glance.
 show_version() {
-    check_image "$IMAGE_NAME" || exit 1
+    check_image "$IMAGE_NAME" || exit "$E_DOCKER"
     local built info line guard="" policies="" pi=""
     built=$(image_label "$IMAGE_NAME" org.opencontainers.image.version)
     # shellcheck disable=SC2016 # expanded inside the container, not here

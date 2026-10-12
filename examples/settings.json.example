@@ -1,0 +1,9 @@
+{
+  "$schema": "https://pi.dev/schemas/settings.schema.json",
+  "defaultProjectTrust": "ask",
+  "sessionDir": "/home/coder/.pi/agent/sessions",
+  "enableInstallTelemetry": false,
+  "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  "theme": "system",
+  "quietStartup": false
+}

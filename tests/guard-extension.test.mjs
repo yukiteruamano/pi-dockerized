@@ -140,6 +140,16 @@ const dir = installExtension("ext");
   check("balanced scans but allows benign unknown tools", balanced.results?.[0] === null);
   const hostile = runEvents(dir, [{ tool: "mcp_fetch", input: { cmd: "nmap 10.0.0.1" } }]);
   check("balanced still scans unknown tool values", hostile.results?.[0]?.block === true);
+  const scopedIn = runEvents(dir, [mcp], {
+    PI_DOCKERIZED_POLICY: "strict",
+    PI_DOCKERIZED_ALLOWED_TOOLS: "mcp_fetch:example.com",
+  });
+  check("strict scoped entry allows in-scope input", scopedIn.results?.[0] === null);
+  const scopedOut = runEvents(dir, [{ tool: "mcp_fetch", input: { url: "https://evil.test" } }], {
+    PI_DOCKERIZED_POLICY: "strict",
+    PI_DOCKERIZED_ALLOWED_TOOLS: "mcp_fetch:example.com",
+  });
+  check("strict scoped entry blocks out-of-scope input", scopedOut.results?.[0]?.block === true);
 }
 
 // --- Host allow file ---------------------------------------------------------------------

@@ -21,7 +21,7 @@ export { DENY_BASH, DENY_READ, DENY_SECRET_PATH, SECRET_PATH_RE, normalizeShell 
 
 // Bump when guard behavior changes. Single source of truth: the wrapper's
 // `version`/`doctor` read it from the image through selftest.mjs.
-export const GUARD_VERSION = 4;
+export const GUARD_VERSION = 5;
 
 // Longest value evaluated. Several vendored and backstop patterns scan with
 // `[^\n|;&]*`, which is quadratic on long lines: 100 KiB takes ~50 s. Beyond the
@@ -63,7 +63,21 @@ export function loadRuleFile(url, warn = () => {}) {
  * Turn a vendored rule array into {id, reason, adminBypass, re}.
  * Rules that cannot be built are dropped; `onSkip(rule)` lets the caller
  * report them instead of silently weakening the policy.
+ * Identical pattern+flags share one RegExp (extension load, host allow file
+ * and tests compile the same sources repeatedly). Stateful flags (`g`/`y`)
+ * are never shared: their lastIndex would leak between evaluations.
  */
+const reCache = new Map();
+export function cachedRegExp(pattern, flags) {
+  if (/[gy]/.test(flags)) return new RegExp(pattern, flags);
+  const key = `${flags}\0${pattern}`;
+  let re = reCache.get(key);
+  if (!re) {
+    re = new RegExp(pattern, flags);
+    reCache.set(key, re);
+  }
+  return re;
+}
 export function compile(rules, onSkip = () => {}) {
   return rules
     .map((rule) => {
@@ -72,11 +86,12 @@ export function compile(rules, onSkip = () => {}) {
         return undefined;
       }
       try {
+        const flags = rule.flags ?? "i";
         return {
           id: rule.id,
           reason: rule.reason,
           adminBypass: rule.admin_bypass === true,
-          re: new RegExp(rule.pattern, rule.flags ?? "i"),
+          re: cachedRegExp(rule.pattern, flags),
         };
       } catch {
         onSkip(rule);
@@ -211,8 +226,8 @@ const blocked = (reason, rule) => ({ block: true, reason, rule });
 
 const vendoredBlock = (rule) =>
   blocked(
-    `Blocked by workspace policy (opencode-policy/${rule.id}): ${rule.reason}`,
-    `opencode-policy/${rule.id}`,
+    `Blocked by workspace policy (pi-policy/${rule.id}): ${rule.reason}`,
+    `pi-policy/${rule.id}`,
   );
 
 // Vendored unsafe patterns (first match wins) over every value of the call.
@@ -302,12 +317,40 @@ function scanWriteTargets(strings, roots) {
 }
 
 /**
+ * Scope entries in `allowedTools` for one unknown tool. Entries are `name`
+ * (or `name:*`, same thing: the tool is allowed, its values still scanned)
+ * or `name:scope1+scope2` (allowed only when a scope substring occurs in the
+ * input). Plain names keep working exactly as before. Returns null when the
+ * tool is not listed, "*" for unrestricted, or the scope array (last scoped
+ * entry wins, but a later unrestricted entry still overrides it).
+ */
+export function allowedScope(allowedTools, tool) {
+  let scoped = null;
+  for (const raw of allowedTools) {
+    const entry = String(raw).trim();
+    if (entry === tool) return "*";
+    if (entry.startsWith(tool + ":")) {
+      const scopes = entry
+        .slice(tool.length + 1)
+        .split("+")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (scopes.length === 0 || scopes.includes("*")) return "*";
+      scoped = scopes;
+    }
+  }
+  return scoped;
+}
+
+/**
  * Evaluate one Pi tool call against the security policy.
  * Returns `{ block: true, reason, rule }` to block, or `undefined` to allow.
  * Pure: the caller supplies the compiled rule sets and the working directory.
  * `unknownTools` decides what happens to tools this policy does not model
  * (MCP tools, other extensions): "scan" runs the vendored patterns over their
- * values, "deny" also refuses any tool not listed in `allowedTools`.
+ * values, "deny" also refuses any tool not listed in `allowedTools` (see
+ * allowedScope: `name` allows the tool, `name:scope+scope` restricts it to
+ * inputs containing a scope).
  * @param {{
  *   tool: string, input: unknown, cwd: string,
  *   unsafePatterns: any[], injectionPatterns: any[], allowPatterns: any[],
@@ -329,10 +372,33 @@ export function evaluateToolCall({
   const joined = strings.join(" ");
   const known = KNOWN_TOOLS.has(tool);
 
-  if (!known && unknownTools === "deny" && !new Set(allowedTools).has(tool)) {
+  if (!known && unknownTools === "deny") {
+    const scope = allowedScope(allowedTools, tool);
+    if (scope === null) {
+      return blocked(
+        `Blocked by pi-dockerized security policy: tool "${tool}" is not allowed in strict mode (list it in setting.allowed_tools)`,
+        "backstop/unknown-tool",
+      );
+    }
+    if (scope !== "*" && !scope.some((s) => joined.includes(s))) {
+      return blocked(
+        `Blocked by pi-dockerized security policy: tool "${tool}" is outside its allowed scope in strict mode (setting.allowed_tools)`,
+        "backstop/unknown-tool-scope",
+      );
+    }
+  }
+
+  // Cap each value first: one huge field (e.g. edit oldText under an unknown
+  // schema, where every string is evaluated) must not reach the quadratic
+  // matchers. The joined total stays capped too, so many small values cannot
+  // smuggle an unbounded scan either.
+  const tooLongValue = strings.find(
+    (s) => typeof s === "string" && s.length > MAX_EVAL_LENGTH,
+  );
+  if (tooLongValue !== undefined) {
     return blocked(
-      `Blocked by pi-dockerized security policy: tool "${tool}" is not allowed in strict mode (list it in setting.allowed_tools)`,
-      "backstop/unknown-tool",
+      `Blocked by pi-dockerized security policy: input too long to evaluate safely (> ${MAX_EVAL_LENGTH} chars in one value); write file contents with the write tool`,
+      "backstop/too-long",
     );
   }
 

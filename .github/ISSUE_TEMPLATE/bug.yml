@@ -1,0 +1,30 @@
+name: Bug report
+description: Something broken in the wrapper, image or guard
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `pi-dockerized version`
+      placeholder: "0.16.0, guard 4, pi ..."
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got (logs welcome)
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Commands starting from a clean state, if you have them
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran `pi-dockerized doctor` and include the relevant lines below

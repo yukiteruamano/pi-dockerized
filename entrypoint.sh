@@ -58,12 +58,12 @@ case "${1:-}" in
     if ! node /usr/local/lib/pi-dockerized/ext-agent.mjs "${check_args[@]}"; then
         echo "pi-dockerized: the Pi settings loosen the sandbox; refusing to start." >&2
         echo "Fix the host settings.json (home/.pi/agent/, or ext-agent/ with Pi Packages), or remove it to get the defaults." >&2
-        exit 1
+        exit 5 # E_GUARD: security-guard refusal (stable code, see lib/config/core.sh)
     fi
     if ! node "$GUARD_DIR/selftest.mjs"; then
         echo "pi-dockerized: the security guard failed its self-test; refusing to start." >&2
         echo "Rebuild the image ('pi-dockerized build') and run 'pi-dockerized doctor'." >&2
-        exit 1
+        exit 5 # E_GUARD: security-guard refusal (stable code, see lib/config/core.sh)
     fi
     ;;
 esac

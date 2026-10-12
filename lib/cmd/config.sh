@@ -76,9 +76,15 @@ show_config() {
 
     case "$subcommand" in
     show)
-        parse_config
-        print_config
-        maybe_drift_hint
+        if [ "${1:-}" = "--sources" ]; then
+            parse_config
+            print_config_sources
+            maybe_drift_hint
+        else
+            parse_config
+            print_config
+            maybe_drift_hint
+        fi
         ;;
     edit)
         if [ ! -f "$CONFIG_FILE" ]; then
@@ -95,10 +101,10 @@ show_config() {
         ;;
     get)
         if [ -z "${1:-}" ]; then
-            print_error "Usage: $0 config get <setting>"
+            print_error "Usage: $0 config get <setting> [--source]"
             exit 1
         fi
-        config_get_value "$1" || exit 1
+        config_get_value "$1" "${2:-}" || exit 1
         ;;
     set)
         if [ $# -ne 2 ]; then
@@ -131,10 +137,79 @@ show_config() {
     esac
 }
 
+# Extract one flat string field from a JSONL audit entry (handles \ escapes).
+# Usage: audit_field <line> <field>
+audit_field() {
+    printf '%s' "$1" | sed -n "s/.*\"$2\":\"\(\(\\\\.\|[^\"\\\\]\)*\)\".*/\1/p"
+}
+
+# Look up a vendored rule's reason by id in the checked-out policy sets.
+# Usage: vendored_reason <rule-id>
+# Prints the reason or nothing.
+vendored_reason() {
+    local id="$1" f
+    for f in "$REPO_ROOT/policies/unsafe-tool-patterns.json" "$REPO_ROOT/policies/prompt-injection-patterns.json"; do
+        [ -f "$f" ] || continue
+        grep -A3 -F "\"id\": \"$id\"" "$f" 2>/dev/null | grep -o '"reason": "[^"]*"' | head -n 1
+    done
+}
+
+# Explain the Nth most recent blocked call (default: the last one): what rule
+# fired, why, and how to proceed when it blocks legitimate work.
+# Usage: explain_audit [N]
+explain_audit() {
+    local n="${1:-1}" log="$PI_HOME/.pi/agent/audit.log" line
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 1 ]; then
+        print_error "--explain needs a positive number"
+        exit 1
+    fi
+    if [ ! -s "$log" ]; then
+        print_info "No blocked calls recorded."
+        return 0
+    fi
+    local total line
+    total=$(wc -l <"$log")
+    if [ "$n" -gt "$total" ]; then
+        print_error "Only $total blocked call(s) recorded."
+        exit 1
+    fi
+    line=$(tail -n "$n" "$log" | head -n 1)
+    local tool rule target ts reason advice
+    tool=$(audit_field "$line" tool)
+    rule=$(audit_field "$line" rule)
+    target=$(audit_field "$line" target)
+    ts=$(audit_field "$line" ts)
+    print_info "Blocked call ($ts): $tool -> $target"
+    print_info "Rule: $rule"
+    case "$rule" in
+    pi-policy/*)
+        reason=$(vendored_reason "${rule#pi-policy/}" | sed 's/^"reason": "//; s/"$//')
+        [ -n "$reason" ] && print_info "Why: $reason"
+        advice="If this blocks legitimate work, add an allow pattern with '$0 config allow edit', or run the session with a looser --policy."
+        ;;
+    backstop/unknown-tool)
+        advice="Strict mode refuses tools it does not model. List it in setting.allowed_tools ('$0 config set allowed_tools ...')."
+        ;;
+    backstop/unknown-tool-scope)
+        advice="The tool is allowed but this input is outside its scope. Widen the scope in setting.allowed_tools."
+        ;;
+    backstop/too-long)
+        advice="The input exceeded the 16 KiB evaluation cap. Split the call, or write file contents with the write tool."
+        ;;
+    backstop/*)
+        advice="Built-in backstop: never relaxable via allow.json. Change the command, not the policy."
+        ;;
+    *)
+        advice="Unknown rule. Rebuild the image so the wrapper and guard agree ('$0 build')."
+        ;;
+    esac
+    print_info "$advice"
+}
+
 # Review the guard's audit log: the tool calls it blocked, newest last.
-# Usage: show_audit [-n N] [--summary] [--clear]
+# Usage: show_audit [-n N] [--summary] [--clear] [--explain [N]]
 show_audit() {
-    local count=20 mode=tail
+    local count=20 mode=tail explain_n=1
     while [ $# -gt 0 ]; do
         case "$1" in
         -n)
@@ -143,8 +218,18 @@ show_audit() {
             ;;
         --summary) mode=summary ;;
         --clear) mode=clear ;;
+        --explain)
+            mode=explain
+            case "${2:-}" in
+            '' | -*) ;;
+            *)
+                explain_n="$2"
+                shift
+                ;;
+            esac
+            ;;
         *)
-            print_error "Usage: $0 audit [-n N] [--summary] [--clear]"
+            print_error "Usage: $0 audit [-n N] [--summary] [--clear] [--explain [N]]"
             exit 1
             ;;
         esac
@@ -161,6 +246,9 @@ show_audit() {
         return 0
     fi
     case "$mode" in
+    explain)
+        explain_audit "$explain_n"
+        ;;
     clear)
         : >"$log"
         print_success "Audit log cleared."

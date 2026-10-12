@@ -31,7 +31,7 @@ _pi_dockerized() {
         'clean:Remove the Docker image (all tags)'
         'help:Show help message'
     )
-    session_flags=(--untrusted --policy --network --dir)
+    session_flags=(--untrusted --policy --network --timeout --resume --list --dir)
     settings=(
         ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
         gpg_relay docker_socket network security_policy allowed_tools verify_updates
@@ -53,7 +53,8 @@ _pi_dockerized() {
                     _arguments \
                         '--untrusted[Strictest setup: strict policy, bridge network, no forwarding or mounts]' \
                         '--policy[Security policy for this session]:policy:(strict balanced off)' \
-                        '--network[Network for this session]:network:(host bridge)' \
+                        '--network[Network for this session]:network:(host bridge)'
+                        '--timeout[Time limit for the session]:duration:' \
                         '--dir[Project directory]:directory:_files -/' \
                         '*:directory:_files -/'
                     ;;
@@ -64,12 +65,18 @@ _pi_dockerized() {
                     _values 'extensions subcommand' list install remove update path edit
                     ;;
                 audit)
-                    _values 'audit option' -n --summary --clear
+                    _values 'audit option' -n --summary --clear --explain
+                    ;;
+                ps|stats)
+                    _values 'output format' --json
+                    ;;
+                doctor)
+                    _values 'doctor flag' --fix
                     ;;
                 stop)
                     local -a names
                     names=(${(f)"$(docker ps --filter label=pi-dockerized=1 --format '{{.Names}}' 2>/dev/null)"})
-                    _values 'session' --all $names
+                    _values 'session' --all --yes --force $names
                     ;;
                 config)
                     case $words[2] in
@@ -103,7 +110,7 @@ _pi_dockerized() {
                     _values 'self-update flag' --check --yes --no-build --verify --pi-version
                     ;;
                 build)
-                    _values 'build flag' --pi-version --bust-cache
+                    _values 'build flag' --pi-version --bust-cache --fresh
                     ;;
                 pull)
                     _values 'pull flag' --no-verify
