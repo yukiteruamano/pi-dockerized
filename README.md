@@ -331,7 +331,7 @@ Behavior worth knowing:
   Anything that can run on the host when Git touches the project (`.git/hooks`,
   `.git/config`, `.gitmodules`, `core.hooksPath`, `core.fsmonitor`, …) cannot be
   written.
-- A single value over 16 KiB is refused: several patterns are quadratic on long
+- A single value over 32 KiB is refused: several patterns are quadratic on long
   lines. Write large files with the `write` tool, not a shell heredoc.
 - The guard's own boot self-test runs before every container command; `doctor`
   runs it too and reports what failed.

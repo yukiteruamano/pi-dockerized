@@ -194,7 +194,7 @@ explain_audit() {
         advice="The tool is allowed but this input is outside its scope. Widen the scope in setting.allowed_tools."
         ;;
     backstop/too-long)
-        advice="The input exceeded the 16 KiB evaluation cap. Split the call, or write file contents with the write tool."
+        advice="The input exceeded the 32 KiB evaluation cap. Split the call, or write file contents with the write tool."
         ;;
     backstop/*)
         advice="Built-in backstop: never relaxable via allow.json. Change the command, not the policy."

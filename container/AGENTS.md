@@ -47,7 +47,7 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Never write `.git/hooks/*`, `.git/config`, `.gitmodules`, or set
   `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.editor`,
   `credential.helper` or `gpg.program`: Git runs them on the host.
-- A single command or tool input over 16 KiB is refused: create large files
+- A single command or tool input over 32 KiB is refused: create large files
   with the `write` tool instead of a shell heredoc. File contents written with
   `write`/`edit` are not scanned, only their paths.
 - Quoting tricks around a denied name (`cat .e''nv`, `c''at`) are decoded and

@@ -7,6 +7,13 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Security (guard 6)
+
+- Evaluation cap raised from 16 KiB to 32 KiB per value (and joined total),
+  measured: realistic 32 KiB inputs scan in milliseconds with the current
+  pattern sets. The quadratic worst case grows with the cap; MCP/unknown
+  tools keep the same cap (no per-tool bypass).
+
 ### Security (guard 5)
 
 - Scoped strict allowlist: `setting.allowed_tools` entries can be `name` (as
