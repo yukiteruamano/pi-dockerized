@@ -57,6 +57,9 @@ RUN apt-get update && apt-get install -y \
     tree \
     less \
     procps \
+    ffmpeg \
+    python3 \
+    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI only (uses host Docker daemon via mounted socket), and only
@@ -123,6 +126,12 @@ RUN curl -fsSLo /tmp/pnpm-install.sh https://get.pnpm.io/install.sh && \
 # Node.js is available via the NVM default symlink created above.
 # ~/.local/bin holds user-installed CLIs (uv tools, pipx apps).
 ENV PATH="$PNPM_HOME/bin:$NVM_DIR/default:/home/coder/.local/bin:$PATH"
+
+# Install yt-dlp (YouTube stream URLs for pi-web-access frame extraction) as an
+# isolated tool via uv (upstream ships it on PyPI; distro packages lag behind
+# extractor fixes). Unpinned on purpose so rebuilds pick up fresh extractors.
+# shortcut: unpinned yt-dlp, pin with `uv tool install yt-dlp@<ver>` if builds must be reproducible.
+RUN uv tool install yt-dlp && yt-dlp --version
 
 # NVM installs the current Node LTS and the Docker apt repo tracks `stable` on
 # purpose: both follow upstream security fixes. Pi, uv, pnpm and nvm are pinned.
