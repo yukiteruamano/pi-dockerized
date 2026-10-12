@@ -93,6 +93,10 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ### Changed
 
+- **Baked global `AGENTS.md`.** `container/AGENTS.md` again forbids system-wide
+  installs and no longer claims extensions are fixed at build time (Pi Packages
+  are host-managed); a guard test keeps it consistent with the guard's write
+  root and size limit.
 - The wrapper is split into `lib/cmd/*` and `lib/install/*`; `bin/pi-dockerized`
   only dispatches. Diagnostics moved to `container/doctor.sh` and
   `container/auth-check.sh`.

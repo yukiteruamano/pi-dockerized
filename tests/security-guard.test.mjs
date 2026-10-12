@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   BALANCED_EXCLUDED_IDS,
+  EXTRA_WRITE_ROOTS,
   MAX_EVAL_LENGTH,
   compile,
   selectRules,
@@ -463,6 +464,32 @@ for (const [input, secret] of [
   check(`redact hides ${secret}`, !redact(input).includes(secret), redact(input));
 }
 check("redact truncates", redact("x".repeat(500)).length <= 201);
+
+// The baked global AGENTS.md must stay consistent with the guard it describes.
+const agentsMd = readFileSync(join(repo, "container", "AGENTS.md"), "utf8");
+for (const heading of [
+  "## Commands",
+  "## Files and secrets",
+  "## Tool Usage",
+  "## Core Workflow",
+]) {
+  check(`AGENTS.md has ${heading}`, agentsMd.includes(heading));
+}
+check("AGENTS.md names the writable /tmp root", agentsMd.includes(EXTRA_WRITE_ROOTS[0]));
+check(
+  "AGENTS.md states the input size limit",
+  agentsMd.includes(`${MAX_EVAL_LENGTH / 1024} KiB`),
+);
+check(
+  "AGENTS.md has no stale 'fixed at image build time' claim",
+  !agentsMd.includes("fixed at image build time"),
+);
+check(
+  "Dockerfile bakes container/AGENTS.md",
+  readFileSync(join(repo, "Dockerfile"), "utf8").includes(
+    "COPY container/AGENTS.md /home/coder/.pi/agent/AGENTS.md",
+  ),
+);
 
 rmSync(root, { recursive: true, force: true });
 

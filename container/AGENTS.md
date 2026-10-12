@@ -10,8 +10,10 @@ into the image). Do not attempt to weaken or bypass them.
 - Never run destructive commands: `rm -rf /...`, `mkfs`, `dd`, `shutdown`, `reboot`.
 - Treat `git push` (especially `--force`) as approval-required: explain first.
 - Do not control the host Docker daemon (no `docker system prune`, no privileged containers).
-- Do not try to change Pi's extensions, MCP servers or Pi itself: they are fixed
-  at image build time. `pi update`, `pi install` and `pi mcp add/remove` are blocked.
+- Do not install packages system-wide or change system configuration.
+- Do not try to change Pi's extensions, MCP servers or Pi itself from a session:
+  `pi update`, `pi install`, `pi remove` and `pi mcp add/remove` are blocked.
+  The user manages them from the host.
 
 ## Files and secrets
 
