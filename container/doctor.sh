@@ -65,7 +65,9 @@ fi
 echo "== pi packages =="
 # The settings in effect keep the sandbox's security keys, whether they are the
 # baked ones or the host's ext-agent file (the entrypoint enforces the same).
-if check_out=$(node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$agent/settings.json" 2>&1); then
+doctor_check=(check "$agent/settings.json")
+if [ "${PI_DOCKERIZED_SETTINGS_SOURCE:-host}" = host ]; then doctor_check+=(--host); fi
+if check_out=$(node /usr/local/lib/pi-dockerized/ext-agent.mjs "${doctor_check[@]}" 2>&1); then
     note "settings security keys: intact"
 else
     note "settings security keys: BROKEN"

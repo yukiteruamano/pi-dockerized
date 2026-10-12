@@ -163,6 +163,8 @@ build_common_docker_args() {
 
     # Keep Pi from checking for and applying self-updates inside the container.
     DOCKER_COMMON_ARGS+=(-e "PI_SKIP_VERSION_CHECK=1")
+    # Tells entrypoint.sh which settings rules to check (host file vs packages).
+    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_SETTINGS_SOURCE=$(settings_source)")
 
     # Install/update telemetry off by default (override with PI_TELEMETRY=1).
     DOCKER_COMMON_ARGS+=(-e "PI_TELEMETRY=${PI_TELEMETRY:-0}")
@@ -180,14 +182,45 @@ build_common_docker_args() {
     DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_AUDIT_FILE=$PI_AGENT_CONTAINER_DIR/audit.log")
 }
 
+# Which settings.json a session mounts: "ext" when Pi Packages are installed
+# (their installer file replaces the host one), "host" otherwise. Untrusted
+# sessions never receive packages, so they always use the host file.
+# Usage: settings_source (prints ext|host)
+settings_source() {
+    if [ -f "$EXT_AGENT_DIR/settings.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then
+        echo ext
+    else
+        echo host
+    fi
+}
+
+# Mount the Pi Packages installed with `pi-dockerized extensions install`: their
+# settings.json, npm/ and git/, read-only (code the session loads but can never
+# change). The entrypoint checks that the settings still carry the sandbox's
+# security keys. Usage: mount_ext_packages (returns 1 on invalid JSON)
+mount_ext_packages() {
+    local ext_part ev=0
+    json_valid "$EXT_AGENT_DIR/settings.json" || ev=$?
+    if [ "$ev" -eq 1 ]; then
+        config_error "$EXT_AGENT_DIR/settings.json is not valid JSON; fix it or remove it."
+        return 1
+    fi
+    VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/settings.json:$PI_AGENT_CONTAINER_DIR/settings.json:ro")
+    for ext_part in npm git; do
+        if [ -d "$EXT_AGENT_DIR/$ext_part" ]; then
+            VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/$ext_part:$PI_AGENT_CONTAINER_DIR/$ext_part:ro")
+        fi
+    done
+}
+
 # Build standard volume mount arguments for Pi directories.
 # Populates VOLUME_ARGS and CONTAINER_WORKDIR.
 # The project is mounted at a path derived from the host path (with $HOME
 # stripped) so that Pi stores a unique, meaningful directory per project.
-# The read-only resources (settings, extensions, AGENTS.md, prompts, themes,
-# models) are baked into the image and are NOT mounted. Only mcp.json (RO, host
-# edited), the skills dir (RO, host edited), the session store and the runtime
-# files Pi persists are bind-mounted.
+# The read-only resources (settings.json base, extensions, AGENTS.md) are baked
+# into the image and are NOT mounted. Host-managed inputs are bind-mounted: mcp.json
+# and models.json (RO), skills (RO), prompts and themes (RW), plus the session
+# store, the runtime files Pi persists and the pi-lens state directory.
 build_standard_volume_args() {
     local project_dir="$1"
     local include_docker_socket="${2:-false}"
@@ -224,25 +257,30 @@ build_standard_volume_args() {
         VOLUME_ARGS+=(-v "$agent/skills:$PI_AGENT_CONTAINER_DIR/skills:ro")
     fi
 
-    # Pi Packages installed with `pi-dockerized extensions install`: their
-    # settings.json, npm/ and git/ replace the agent's own, read-only (code the
-    # session loads but can never change). Nothing is mounted until something was
-    # installed, and never for --untrusted sessions, which run without any
-    # host-chosen extension code. The entrypoint checks that the settings still
-    # carry the sandbox's security keys.
-    if [ -f "$EXT_AGENT_DIR/settings.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then
-        local av=0 ext_part
-        json_valid "$EXT_AGENT_DIR/settings.json" || av=$?
-        if [ "$av" -eq 1 ]; then
-            config_error "$EXT_AGENT_DIR/settings.json is not valid JSON; fix it or remove it."
+    # Prompt templates and themes are data, not code: read-write so they can be
+    # added or edited from the host or from inside a session.
+    local data_dir
+    for data_dir in prompts themes; do
+        if [ -d "$agent/$data_dir" ]; then
+            VOLUME_ARGS+=(-v "$agent/$data_dir:$PI_AGENT_CONTAINER_DIR/$data_dir:rw")
+        fi
+    done
+
+    # settings.json has one mount target, so exactly one file is mounted there
+    # (see settings_source). Both are read-only and checked by the entrypoint.
+    if [ "$(settings_source)" = ext ]; then
+        if [ -f "$agent/settings.json" ]; then
+            config_warning "Pi Packages are installed: the host settings.json is not applied (ext-agent/settings.json is used)"
+        fi
+        mount_ext_packages || return 1
+    elif [ -f "$agent/settings.json" ]; then
+        local hv=0
+        json_valid "$agent/settings.json" || hv=$?
+        if [ "$hv" -eq 1 ]; then
+            config_error "$agent/settings.json is not valid JSON; fix it or remove it."
             return 1
         fi
-        VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/settings.json:$PI_AGENT_CONTAINER_DIR/settings.json:ro")
-        for ext_part in npm git; do
-            if [ -d "$EXT_AGENT_DIR/$ext_part" ]; then
-                VOLUME_ARGS+=(-v "$EXT_AGENT_DIR/$ext_part:$PI_AGENT_CONTAINER_DIR/$ext_part:ro")
-            fi
-        done
+        VOLUME_ARGS+=(-v "$agent/settings.json:$PI_AGENT_CONTAINER_DIR/settings.json:ro")
     fi
 
     # Session store (Pi persists conversations here; sessionDir is fixed to this
@@ -276,6 +314,19 @@ build_standard_volume_args() {
         VOLUME_ARGS+=(-v "$agent/allow.json:$PI_AGENT_CONTAINER_DIR/allow.json:ro")
     fi
 
+    # Host-managed provider definitions (read-only: the session cannot point
+    # providers at other endpoints). Skipped for --untrusted sessions, which use
+    # only the image's providers.
+    if [ -f "$agent/models.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then
+        local mv=0
+        json_valid "$agent/models.json" || mv=$?
+        if [ "$mv" -eq 1 ]; then
+            config_error "$agent/models.json is not valid JSON; fix it or remove it."
+            return 1
+        fi
+        VOLUME_ARGS+=(-v "$agent/models.json:$PI_AGENT_CONTAINER_DIR/models.json:ro")
+    fi
+
     # npm cache (read-write): persisted so npx-based MCP servers do not re-download.
     if [ -d "$PI_HOME/.npm" ]; then
         VOLUME_ARGS+=(-v "$PI_HOME/.npm:/home/coder/.npm:rw")
@@ -285,6 +336,12 @@ build_standard_volume_args() {
     # container is ephemeral (--rm), so persist them on the host.
     if [ -d "$PI_HOME/.cache/qmd" ]; then
         VOLUME_ARGS+=(-v "$PI_HOME/.cache/qmd:/home/coder/.cache/qmd:rw")
+    fi
+
+    # pi-lens keeps its state under ~/.pi-lens; persist it on the host so it
+    # survives container restarts (the container is ephemeral, --rm).
+    if [ -d "$PI_HOME/.pi-lens" ]; then
+        VOLUME_ARGS+=(-v "$PI_HOME/.pi-lens:/home/coder/.pi-lens:rw")
     fi
 
     # Claude Code compatibility directory (optional): fallback CLAUDE.md rules

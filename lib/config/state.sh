@@ -10,9 +10,11 @@
 ensure_pi_dirs() {
     mkdir -p "$PI_HOME/.pi/agent" 2>/dev/null || true
     mkdir -p "$PI_HOME/.pi/agent/skills" 2>/dev/null || true
+    mkdir -p "$PI_HOME/.pi/agent/prompts" "$PI_HOME/.pi/agent/themes" 2>/dev/null || true
     mkdir -p "$PI_HOME/.pi/agent/sessions" 2>/dev/null || true
     mkdir -p "$PI_HOME/.npm" 2>/dev/null || true
     mkdir -p "$PI_HOME/.cache/qmd" 2>/dev/null || true
+    mkdir -p "$PI_HOME/.pi-lens" 2>/dev/null || true
     ensure_pi_state
     harden_state_permissions
 }
@@ -45,6 +47,15 @@ ensure_pi_state() {
     # the host (`pi-dockerized config pi edit`). Seeded empty on first run.
     if [ ! -f "$agent/mcp.json" ]; then
         printf '{\n  "mcpServers": {}\n}\n' >"$agent/mcp.json" 2>/dev/null || true
+    fi
+
+    # Pi settings: the host's preferences, mounted read-only. Seeded once from
+    # the same defaults the image bakes (security keys included), so later edits
+    # are never overwritten.
+    local base_settings
+    base_settings="$(install_root)/container/settings.base.json"
+    if [ ! -f "$agent/settings.json" ] && [ -f "$base_settings" ]; then
+        cp "$base_settings" "$agent/settings.json" 2>/dev/null || true
     fi
 
     # Pi Packages live in this directory (the agent dir of the installer

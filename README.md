@@ -19,9 +19,10 @@ host stays protected.
   (`pi-dockerized extensions ...`) and kept on the host, so they survive image
   rebuilds; sessions mount them read-only: the agent cannot add, remove or
   change them. Only the security guard stays baked into the image.
-- **Everything is read-only except runtime state.** Settings, the guard,
-  prompts, themes, AGENTS.md and models are baked RO; `mcp.json`, `skills/` and
-  installed Pi Packages are mounted RO from the host; only `sessions/` and the
+- **Everything is read-only except runtime state and data.** The guard and
+  AGENTS.md are baked RO; `settings.json` (preferences only), `mcp.json`,
+  `models.json`, `skills/` and installed Pi Packages are mounted RO from the
+  host; `prompts/` and `themes/` are read-write data; `sessions/` and the
   runtime state Pi must write are writable.
 - **Auth uses provider API keys** from `setting.env_file`. Pi has no
   `auth login` subcommand; interactive login happens through the TUI `/login`,
@@ -34,9 +35,11 @@ host stays protected.
 - **Isolated environment** — Pi only sees the mounted project directory.
 - **Baked, immutable extensions** — installed at build time, `chmod a-w` in the
   image; the agent cannot modify its own capabilities.
-- **Read-only config** — `settings.json`, `AGENTS.md`, `extensions/`, prompts,
-  themes and models come from the image; `mcp.json` is mounted read-only from
-  the host.
+- **Read-only config** — `AGENTS.md` and `extensions/` come from the image;
+  `settings.json`, `mcp.json` and `models.json` are mounted read-only from the
+  host. The host `settings.json` may only hold preferences: the sandbox's
+  security keys are pinned and any other key (packages, extensions, command
+  settings) stops the session from starting.
 - **Security extension** — the ported `opencode-policy` unsafe/injection pattern
   sets plus built-in backstops (secrets and credential stores, destructive
   commands, Git hooks/config, write confinement) enforced in `strict`,
@@ -236,8 +239,11 @@ secrets. For OAuth servers, `pi-dockerized mcp login <server>` writes tokens to
 Skills live under
 `~/.config/pi-dockerized/home/.pi/agent/skills/<name>/SKILL.md` and are mounted
 **read-only**: create and edit them on the host, never from a session. Pi picks
-them up on next start (`/reload` inside a session). Project skills (`.pi/skills/`) are disabled by the
-baked `defaultProjectTrust: "never"`.
+them up on next start (`/reload` inside a session). Project resources
+(`.pi/` extensions, skills, prompts, MCP servers) load only after you trust the
+project: the baked `defaultProjectTrust: "ask"` prompts in interactive sessions
+and skips them in `exec`/print mode. Trust granted with `/trust` is stored in
+`trust.json`.
 
 ## Configuration
 
@@ -279,6 +285,11 @@ does not exist is skipped with a warning.
 | `$PROJECT_DIR` | path with `$HOME` stripped | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
+| `home/.pi/agent/models.json` | `/home/coder/.pi/agent/models.json` | **ro** | Provider definitions (host-edited; absent or `--untrusted`: not mounted) |
+| `home/.pi/agent/prompts/` | `/home/coder/.pi/agent/prompts/` | rw | Prompt templates (the session can also write them) |
+| `home/.pi/agent/themes/` | `/home/coder/.pi/agent/themes/` | rw | Themes (the session can also write them) |
+| `home/.pi-lens/` | `/home/coder/.pi-lens/` | rw | pi-lens state, kept across restarts |
+| `home/.pi/agent/settings.json` | `/home/coder/.pi/agent/settings.json` | **ro** | Host preferences, seeded from the defaults (replaced by the packages file while Pi Packages are installed) |
 | `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages installed with `pi install` (only once something is installed; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions (`sessionDir`) |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
@@ -290,8 +301,7 @@ does not exist is skipped with a warning.
 | `~/.composio/` | idem | rw | Composio CLI (optional custom mount) |
 | `/var/run/docker.sock` | idem | rw | Docker socket (opt-in, root-equivalent) |
 
-Not mounted (baked read-only in the image): `settings.json`, `AGENTS.md`,
-`extensions/`, `prompts/`, `themes/`, `models.json`.
+Not mounted (baked read-only in the image): `AGENTS.md`, `extensions/`.
 
 The whole host state tree lives under `~/.config/pi-dockerized/home/` (override
 with `PI_HOME`) and survives rebuilds.

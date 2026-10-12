@@ -85,6 +85,46 @@ assert_contains "$vols" "$AGENT/mcp-auth.json:/home/coder/.pi/agent/mcp-auth.jso
 assert_contains "$vols" "$HOME/.claude:/home/coder/.claude:ro" "the .claude directory must be mounted read-only"
 assert_contains "$vols" "$HOME/.agents:/home/coder/.agents:ro" "the .agents directory must be mounted read-only"
 assert_not_contains "$vols" "/var/run/docker.sock" "docker socket must not be mounted by default"
+assert_contains "$vols" "$AGENT/prompts:/home/coder/.pi/agent/prompts:rw" "prompts must be mounted read-write"
+assert_contains "$vols" "$AGENT/themes:/home/coder/.pi/agent/themes:rw" "themes must be mounted read-write"
+assert_contains "$vols" "$PI_HOME/.pi-lens:/home/coder/.pi-lens:rw" "pi-lens state must be mounted read-write"
+[ -d "$PI_HOME/.pi-lens" ] || fail "pi-lens state dir was not created"
+cmp -s "$AGENT/settings.json" "$REPO_DIR/container/settings.base.json" || fail "settings.json must be seeded from the baked defaults"
+
+# settings.json source: the host file in host mode, the packages file when Pi
+# Packages are installed (and never for --untrusted).
+assert_contains " ${VOLUME_ARGS[*]} " "$AGENT/settings.json:/home/coder/.pi/agent/settings.json:ro" "host settings.json must be mounted read-only over the baked one"
+build_common_docker_args
+assert_contains " ${DOCKER_COMMON_ARGS[*]} " "PI_DOCKERIZED_SETTINGS_SOURCE=host" "the session must tell the entrypoint it checks the host file"
+mkdir -p "$EXT_AGENT_DIR"
+printf '{}\n' >"$EXT_AGENT_DIR/settings.json"
+build_standard_volume_args "$PROJECT" false
+assert_contains " ${VOLUME_ARGS[*]} " "$EXT_AGENT_DIR/settings.json:/home/coder/.pi/agent/settings.json:ro" "packages settings must replace the host file while packages are installed"
+assert_not_contains " ${VOLUME_ARGS[*]} " "$AGENT/settings.json:" "host settings.json must not be mounted alongside packages"
+build_common_docker_args
+assert_contains " ${DOCKER_COMMON_ARGS[*]} " "PI_DOCKERIZED_SETTINGS_SOURCE=ext" "the session must check the packages file rules"
+SESSION_UNTRUSTED=true
+build_standard_volume_args "$PROJECT" false
+SESSION_UNTRUSTED=false
+assert_contains " ${VOLUME_ARGS[*]} " "$AGENT/settings.json:/home/coder/.pi/agent/settings.json:ro" "--untrusted must use the host settings.json, never packages"
+rm -f "$EXT_AGENT_DIR/settings.json"
+rmdir "$EXT_AGENT_DIR" 2>/dev/null || true
+build_standard_volume_args "$PROJECT" false
+assert_not_contains "$vols" "models.json" "models.json must not be mounted when the file is absent"
+
+# models.json: read-only when valid, refused when broken, never with --untrusted.
+if [ "$have_node" = true ]; then
+    printf '{"providers":{}}\n' >"$AGENT/models.json"
+    build_standard_volume_args "$PROJECT" false
+    assert_contains " ${VOLUME_ARGS[*]} " "$AGENT/models.json:/home/coder/.pi/agent/models.json:ro" "models.json must be mounted read-only"
+    SESSION_UNTRUSTED=true
+    build_standard_volume_args "$PROJECT" false
+    SESSION_UNTRUSTED=false
+    assert_not_contains " ${VOLUME_ARGS[*]} " "models.json" "models.json must not be mounted with --untrusted"
+    printf '{ broken' >"$AGENT/models.json"
+    (build_standard_volume_args "$PROJECT" false) >/dev/null 2>&1 && fail "invalid models.json must be refused"
+    rm -f "$AGENT/models.json"
+fi
 
 # --- Common docker args ------------------------------------------------------
 build_common_docker_args

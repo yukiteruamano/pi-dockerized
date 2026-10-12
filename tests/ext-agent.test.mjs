@@ -50,7 +50,7 @@ const fresh = (name) => {
 
 // --- The baked defaults really are the sandbox keys ---------------------------------------
 check("base defines every security key", SECURITY_KEYS.every((key) => key in base));
-check("base keeps project trust off", base.defaultProjectTrust === "never");
+check("base asks before trusting a project", base.defaultProjectTrust === "ask");
 check("the baked settings declare no packages (they are host-managed)", !("packages" in base));
 
 // --- Pure helpers ----------------------------------------------------------------------------
@@ -97,7 +97,7 @@ check("enforce does not create a missing file", run(["enforce", fresh("empty")])
 // --- check ---------------------------------------------------------------------------------------------
 check("check passes on the baked settings", run(["check", baseFile]).status === 0);
 dir = fresh("check");
-writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, defaultProjectTrust: "ask" }));
+writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, defaultProjectTrust: "always" }));
 res = run(["check", join(dir, "settings.json")]);
 check("check fails on loosened trust", res.status === 1);
 check("check names the key", /defaultProjectTrust/.test(res.stderr), res.stderr);
@@ -112,6 +112,20 @@ const live = spawnSync(process.execPath, [script, "check", baseFile], {
   env: { ...process.env, PI_DOCKERIZED_TEST: "", PI_DOCKERIZED_BASE_SETTINGS: baseFile },
 });
 check("the baked reference path is not overridable outside test mode", live.status === 1 && /usr\/local\/lib/.test(live.stderr), live.stderr);
+
+// --- host settings (check --host): preferences only -------------------------------------------------
+check("the baked settings are a valid host file", run(["check", baseFile, "--host"]).status === 0);
+check("the baked settings hold no key outside the host allowlist", violations(base, base, { host: true }).length === 0);
+for (const key of ["packages", "extensions", "skills", "prompts", "themes", "npmCommand", "shellCommandPrefix", "shellPath", "externalEditor", "httpProxy", "enableAnalytics"]) {
+  check(`host file may not set ${key}`, violations({ ...base, [key]: "x" }, base, { host: true }).length === 1);
+}
+check("host file may set a preference", violations({ ...base, theme: "dark" }, base, { host: true }).length === 0);
+check("host mode still pins the security keys", violations({ ...base, defaultProjectTrust: "always" }, base, { host: true }).length === 1);
+check("without --host, extra keys stay allowed (the packages file)", violations({ ...base, packages: ["npm:x"] }, base).length === 0);
+dir = fresh("host");
+writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, packages: ["npm:x"] }));
+res = run(["check", join(dir, "settings.json"), "--host"]);
+check("check --host rejects packages", res.status === 1 && /packages is not a host setting/.test(res.stderr), res.stderr);
 
 // --- usage ------------------------------------------------------------------------------------------------
 check("unknown command fails", run(["frobnicate", dir]).status === 1);

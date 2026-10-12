@@ -262,8 +262,9 @@ reports unknown settings, invalid values and stray lines with their line number.
   (`WRAPPER_VERSION`, `VCS_REF`) last so they do not invalidate earlier layers.
 - Clean apt caches in the same `RUN` layer; Docker CLI only (never the daemon).
 - No privilege escalation: no `sudo` binary/sudoers; run as non-root `coder`.
-- Baked resources are locked with `chmod -R a-w` (the guard, prompts, themes,
-  settings, AGENTS.md, mcp.json). Do not install Pi Packages at build time: they
+- Baked resources are locked with `chmod -R a-w` (the guard, settings,
+  AGENTS.md, mcp.json). `prompts/` and `themes/` are host-mounted read-write
+  data over their baked (empty) directories. Do not install Pi Packages at build time: they
   are host-managed (`EXT_AGENT_DIR`, installed with the official `pi install`,
   mounted ro).
 - Cache-busting `ARG PI_BUILD_TIME` only used by `update`, not regular `build`.
@@ -299,18 +300,21 @@ reports unknown settings, invalid values and stray lines with their line number.
 | `$PROJECT_DIR` | `$PROJECT_DIR` (`$HOME` stripped) | rw | Project files |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
+| `home/.pi/agent/settings.json` | `/home/coder/.pi/agent/settings.json` | **ro** | Host preferences (seeded from defaults; replaced by the packages file while Pi Packages are installed) |
 | `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages (only after the first install; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions |
 | `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |
 | `home/.pi/agent/allow.json` | idem | **ro** | Optional host allow rules (absent with `--untrusted`) |
+| `home/.pi/agent/models.json` | idem | **ro** | Provider definitions (absent or `--untrusted`: not mounted) |
+| `home/.pi/agent/prompts/`, `themes/` | idem | rw | Prompt templates and themes (data) |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache |
 | `home/.cache/qmd/` | `/home/coder/.cache/qmd/` | rw | qmd index and models |
+| `home/.pi-lens/` | `/home/coder/.pi-lens/` | rw | pi-lens state |
 | `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
 | `~/.composio/` | idem | rw | Composio CLI (custom mount) |
 | `/var/run/docker.sock` | idem | rw (opt-in) | Docker socket |
 | `home/.gnupg/` | `/home/coder/.gnupg/` | rw (opt-in) | Mirrored public GnuPG material |
 
-Not mounted (baked read-only): `settings.json`, `AGENTS.md`, `extensions/`,
-`prompts/`, `themes/`, `models.json`. The wrapper's own `~/.config/pi-dockerized/`
-is never mounted.
+Not mounted (baked read-only): `AGENTS.md`, `extensions/`.
+The wrapper's own `~/.config/pi-dockerized/` is never mounted.

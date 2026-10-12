@@ -93,6 +93,22 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ### Changed
 
+- **Project trust is `ask`, not `never`.** The baked and pinned
+  `defaultProjectTrust` is now `ask`: interactive sessions prompt before loading
+  a project's `.pi/` resources; print/exec sessions still skip them. Existing
+  host `settings.json` files that say `never` fail the start check until that
+  key is changed to `"ask"`.
+- **Host-managed `settings.json`.** The host file (seeded once from the baked
+  defaults, now documented in `container/settings.base.json`) is mounted
+  read-only. It may hold only preference keys (`PREFERENCE_KEYS` in
+  `ext-agent.mjs`); packages, extensions, skills, prompts, themes, command
+  settings, proxy and telemetry keys, and any change to the security keys stop
+  the session at start. While Pi Packages are installed, their settings file is
+  mounted instead and the host preferences are not applied.
+- **Host-managed Pi data.** `prompts/` and `themes/` are mounted read-write from
+  the host (`~/.config/pi-dockerized/home/.pi/agent/`), `models.json` read-only
+  (not mounted with `--untrusted`), and `~/.pi-lens` is persisted on the host so
+  pi-lens state survives restarts.
 - **Baked global `AGENTS.md`.** `container/AGENTS.md` again forbids system-wide
   installs and no longer claims extensions are fixed at build time (Pi Packages
   are host-managed); a guard test keeps it consistent with the guard's write

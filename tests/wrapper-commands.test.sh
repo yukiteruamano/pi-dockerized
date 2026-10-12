@@ -404,10 +404,10 @@ if command -v node >/dev/null 2>&1; then
         "$REPO_DIR/container/settings.base.json" || fail "the baked settings must not declare packages"
 fi
 
-# Until something is installed, sessions keep the baked settings.
+# Until something is installed, sessions use the host settings.json (see
+# wrapper-args.test.sh); nothing from ext-agent is mounted.
 build_standard_volume_args "$PROJECT" false
 assert_not_contains " ${VOLUME_ARGS[*]} " "ext-agent" "nothing is mounted before the first install"
-assert_not_contains " ${VOLUME_ARGS[*]} " "/home/coder/.pi/agent/settings.json" "the baked settings stay when nothing is installed"
 out="$(print_session_exposure 2>&1)"
 assert_contains "$out" "extensions=off" "no packages: extensions off"
 

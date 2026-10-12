@@ -89,7 +89,9 @@ CI also builds nothing on the contributor's machine, but the image workflow
 - `container/ext-agent.mjs` keeps the settings' security keys intact (seed after
   install, enforce, check at every start; tested by `tests/ext-agent.test.mjs`).
   If you add a key to `container/settings.base.json` that is part of the sandbox,
-  add it to `SECURITY_KEYS` there.
+  add it to `SECURITY_KEYS` there. A host `settings.json` may carry only the
+  keys in `PREFERENCE_KEYS` (`check --host`); add a preference there only when it
+  cannot load code or paths, run a command, route traffic or identify the user.
 - Package sources are validated by `validate_ext_source` (`lib/cmd/extensions.sh`):
   keep it to what `pi install` takes, and never let a value be read as an option.
 

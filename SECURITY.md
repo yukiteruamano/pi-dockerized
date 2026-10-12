@@ -19,7 +19,7 @@ baked security extension (`extensions/pi-security-guard/`).
 | Control | How |
 |---------|-----|
 | Non-root execution | Image has no `sudo` (no binary, no sudoers); the wrapper starts the container with `--user <host uid>:<host gid>`, `--cap-drop=ALL` and `--security-opt no-new-privileges:true`. `entrypoint.sh` performs no privilege changes |
-| Immutable guard and extensions | The guard is baked into the image and locked read-only together with `settings.json`, `AGENTS.md`, prompts and themes. Pi Packages are installed on the host with the official `pi install` (`pi-dockerized extensions`) and mounted read-only (`settings.json`, `npm/`, `git/`), so the agent cannot add, remove or update them; `mcp.json` and `skills/` are likewise mounted read-only from the host. The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
+| Immutable guard and extensions | The guard is baked into the image and locked read-only together with `AGENTS.md`. Pi Packages are installed on the host with the official `pi install` (`pi-dockerized extensions`) and mounted read-only (`settings.json`, `npm/`, `git/`), so the agent cannot add, remove or update them; `mcp.json`, `models.json`, `skills/` and the host `settings.json` are likewise mounted read-only from the host. The host `settings.json` is validated at every start: its security keys must match the baked ones and it may hold only preference keys (no packages, extensions, skills, prompts, themes, command, proxy or telemetry settings). `prompts/` and `themes/` are mounted **read-write** as data: a session can change prompt templates that later sessions load, so review them on the host The writable state (`sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`) is bind-mounted read-write from the host. `pi update`/`pi install`/`pi mcp add/remove` are additionally blocked by the guard |
 | Read-only MCP config | `mcp.json` is mounted **read-only** from the host; only OAuth tokens (`mcp-auth.json`) and `trust.json` are writable |
 | Project-only writes | Only the project directory and `/tmp/pi` are writable (enforced by the guard, resolving symlinks via `realpath` so a link inside the project cannot escape) |
 | Secret reads | The guard refuses reads of `.env` (except `.env.example`), `*.pem`, `*.key`, key-like names, `auth.json`, `mcp-auth.json`, `trust.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, `~/.aws/`, `~/.kube/`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, SSH keys and `private-keys-v1.d/` — via both the file tools and shell commands. Each input value is tested on its own, so a trailing parameter cannot hide a target |
@@ -86,11 +86,17 @@ baked security extension (`extensions/pi-security-guard/`).
 - **Skills are read-only.** `skills/` is mounted read-only from the host, so a
   session cannot add or change skills (which instruct the model). Edit them on
   the host and review what you install.
-- **Project trust is disabled.** The baked `settings.json` sets
-  `defaultProjectTrust: "never"`, so project `.pi/` extensions, MCP servers,
-  skills and prompts are not loaded.
-- **MCP OAuth tokens are read-write.** `mcp-auth.json` (and `trust.json`) are
-  mounted read-write so sign-in persists; the agent could read or alter them.
+- **Project trust asks, it does not trust.** The baked `settings.json` sets
+  `defaultProjectTrust: "ask"`. Interactive sessions prompt before loading
+  project `.pi/` extensions, MCP servers, skills and prompts; `exec`/print
+  sessions skip them. A project extension is code that runs inside the Pi
+  process, so accepting the prompt for an untrusted repository means running
+  that code (the container limits its reach, but the guard may not see it).
+  Trust only repositories you wrote or reviewed.
+- **MCP OAuth tokens and trust decisions are read-write.** `mcp-auth.json` and
+  `trust.json` (which stores `/trust` decisions) are mounted read-write so
+  sign-in and trust persist; the agent could read or alter them. The guard
+  blocks reads of `trust.json` and writes outside the project and `/tmp/pi`.
 - **Environment variables in the container are visible to the agent.** Provider
   keys from the secrets file end up in the container environment and in
   `docker inspect` on the host. Keep unrelated host secrets out of the env file.
