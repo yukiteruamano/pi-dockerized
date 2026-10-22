@@ -17,14 +17,14 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # together with their *_INSTALL_SHA256 (Renovate does not manage them).
 ARG NVM_VERSION=v0.40.8
 # renovate: datasource=npm depName=pnpm
-ARG PNPM_VERSION=12.11.2
+ARG PNPM_VERSION=12.15.0
 # uv release; override with --build-arg UV_VERSION=x.y.z
-ARG UV_VERSION=0.13.0
+ARG UV_VERSION=0.13.5
 # Node.js major installed through nvm (Pi requires >= 22.19). The minor/patch
 # floats inside the major so security fixes are picked up on rebuild.
 ARG NODE_VERSION=24
 # Pi CLI release; override with --build-arg PI_VERSION=x.y.z
-ARG PI_VERSION=v1.1.0
+ARG PI_VERSION=v1.4.0
 # qmd (on-device markdown search) release
 # renovate: datasource=npm depName=@tobilu/qmd
 ARG QMD_VERSION=2.8.3
@@ -33,7 +33,7 @@ ARG QMD_VERSION=2.8.3
 # both together). The pnpm installer is not versioned upstream: if it changes
 # the build stops here so the new script can be reviewed.
 ARG NVM_INSTALL_SHA256=48a0eee9a60e07422dce0eb5774754c83889570ca1ee2566c516acbe8af03a9e
-ARG UV_INSTALL_SHA256=283cbef4bdaca819bd896b0dacb8a085c4c05dbc880642aa5001d97bc4db74ba
+ARG UV_INSTALL_SHA256=1c6e7f025499664633ac2dce43a210800510e9ef0625c52e034a8afdf8bf177a
 ARG PNPM_INSTALL_SHA256=a5cb30faa96ded2937d60f80041e9d47b5280b224fbdcd9d3b136000a8edabf8
 # The Docker CLI is only useful with the host socket mounted (setting.docker_socket).
 # `pi-dockerized build` sets this from that setting.
@@ -149,7 +149,7 @@ RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1
 
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
-# ARG PI_VERSION pins the release (default v1.1.0).
+# ARG PI_VERSION pins the release (default v1.4.0).
 ARG PI_BUILD_TIME=0
 RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1000 \
     pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@earendil-works/pi-coding-agent && pi --version
