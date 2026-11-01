@@ -7,6 +7,16 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Build
+
+- Version bump: pnpm 12.16.1, uv 0.13.6, Debian `trixie-slim` base digest
+  refreshed (pinned by manifest-list digest, amd64 + arm64). The unversioned
+  pnpm installer script changed upstream, so `PNPM_INSTALL_SHA256` is repinned
+  to the reviewed script (still only `get.pnpm.io`, `registry.npmjs.org` and
+  `github.com/pnpm/pnpm/releases`). Node.js stays on 24: the new active LTS
+  (26) can break qmd's native modules (`better-sqlite3`, `node-llama-cpp`) and
+  the image has no build toolchain for a node-gyp fallback.
+
 ### Security (guard 6)
 
 - Evaluation cap raised from 16 KiB to 32 KiB per value (and joined total),

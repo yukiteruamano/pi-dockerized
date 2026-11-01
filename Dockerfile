@@ -3,7 +3,7 @@
 # Use Debian slim as lightweight Linux base, pinned by digest so a rebuild gets
 # the same bytes (Renovate bumps tag + digest together). The Docker CLI, when
 # installed, talks to the host's Docker daemon via the opt-in mounted socket.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -17,9 +17,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # together with their *_INSTALL_SHA256 (Renovate does not manage them).
 ARG NVM_VERSION=v0.40.8
 # renovate: datasource=npm depName=pnpm
-ARG PNPM_VERSION=12.15.0
+ARG PNPM_VERSION=12.16.1
 # uv release; override with --build-arg UV_VERSION=x.y.z
-ARG UV_VERSION=0.13.5
+ARG UV_VERSION=0.13.6
 # Node.js major installed through nvm (Pi requires >= 22.19). The minor/patch
 # floats inside the major so security fixes are picked up on rebuild.
 ARG NODE_VERSION=24
@@ -33,8 +33,8 @@ ARG QMD_VERSION=2.8.3
 # both together). The pnpm installer is not versioned upstream: if it changes
 # the build stops here so the new script can be reviewed.
 ARG NVM_INSTALL_SHA256=48a0eee9a60e07422dce0eb5774754c83889570ca1ee2566c516acbe8af03a9e
-ARG UV_INSTALL_SHA256=1c6e7f025499664633ac2dce43a210800510e9ef0625c52e034a8afdf8bf177a
-ARG PNPM_INSTALL_SHA256=a5cb30faa96ded2937d60f80041e9d47b5280b224fbdcd9d3b136000a8edabf8
+ARG UV_INSTALL_SHA256=f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7
+ARG PNPM_INSTALL_SHA256=53d3ad6ef67d49d6951f3326bd3180e5c504c8f695bcdf73bb61ec7a4d4c9407
 # The Docker CLI is only useful with the host socket mounted (setting.docker_socket).
 # `pi-dockerized build` sets this from that setting.
 ARG INSTALL_DOCKER_CLI=true
