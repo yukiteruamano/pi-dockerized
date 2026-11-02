@@ -16,6 +16,14 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   `github.com/pnpm/pnpm/releases`). Node.js stays on 24: the new active LTS
   (26) can break qmd's native modules (`better-sqlite3`, `node-llama-cpp`) and
   the image has no build toolchain for a node-gyp fallback.
+- Fix the image build on the 12.16 line: that release moved the global virtual
+  store into the content-addressable store (`$PNPM_HOME/store/v11/links`) and
+  installed pnpm itself there too, so the BuildKit cache mount on
+  `$PNPM_HOME/store` (qmd and pi layers) hid the target of the
+  `$PNPM_HOME/bin/pnpm` shim and the build failed with `exec: ... not found`
+  (exit 127). `PNPM_CONFIG_VIRTUAL_STORE_TYPE=project` keeps global installs
+  under `$PNPM_HOME/global`, which is part of the image, while the cache mount
+  still avoids re-downloading.
 
 ### Security (guard 6)
 

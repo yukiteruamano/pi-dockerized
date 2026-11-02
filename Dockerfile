@@ -115,6 +115,20 @@ RUN curl -fsSLo /tmp/uv-install.sh "https://astral.sh/uv/${UV_VERSION}/install.s
 # See: https://pnpm.io/installation (sections "POSIX systems", "In a Docker container",
 # "Installing a specific version")
 ENV PNPM_HOME="/home/coder/.local/share/pnpm"
+
+# Keep each global install in its own virtual store. From 12.16.0 pnpm links
+# every global package (and pnpm itself, installed by `pnpm setup` below) from a
+# shared virtual store inside the content-addressable store
+# ($PNPM_HOME/store/v11/links). The store is a BuildKit cache mount in the two
+# install layers below, so those links would point at a path that never reaches
+# the image: `$PNPM_HOME/bin/pnpm` is a shim that execs the link and dies with
+# "not found", and a global package would be a dangling link at run time. With
+# `project` the files stay under $PNPM_HOME/global, which is committed; the
+# cache mount keeps serving the downloads.
+# https://github.com/pnpm/pnpm/releases/tag/v12.16.0 ("Adding packages and global
+# packages" section)
+ENV PNPM_CONFIG_VIRTUAL_STORE_TYPE="project"
+
 RUN curl -fsSLo /tmp/pnpm-install.sh https://get.pnpm.io/install.sh && \
     echo "${PNPM_INSTALL_SHA256}  /tmp/pnpm-install.sh" | sha256sum -c - && \
     env PNPM_VERSION="${PNPM_VERSION}" ENV="$HOME/.bashrc" SHELL="$(which bash)" sh /tmp/pnpm-install.sh && \
