@@ -7,6 +7,90 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Security (guard 7)
+
+Fixes from a full audit; every confirmed bypass has a regression test.
+
+- **Git host execution:** `write`/`edit` refuse anything under a `.git` path
+  component (including `commondir`, `modules/*/config`, `config.worktree` and a
+  `.git` gitfile) and `.gitmodules`, case-insensitively. The shell backstop
+  refuses redirects, file verbs and one-liners into `.git` (tolerating
+  `.git//hooks` and `.git/./hooks`), `cd`/`pushd .git` and `git -C .git`.
+  `git config` writes are limited to `user.name/email`, `init.defaultBranch`,
+  `pull.rebase/ff`, `push.default/autoSetupRemote`, `core.autocrlf/eol` and
+  `color.*`; `include.*`, `diff.external`, `filter.*`, `gpg.ssh.program` and
+  similar are refused, also through `git -c`.
+- **Symlinks:** a symlink as the final component of a write path (dangling
+  included) is followed hop by hop and its target checked; loops are refused.
+  Write paths starting with `~` are refused.
+- **Secrets:** `mcp-auth.json`, `trust.json` and any `*auth.json` are blocked
+  from the shell too; the read tool refuses `/proc/*/environ` in every mode.
+  `env -0`, `printenv -0`, `$(printenv)`, `/proc/self/task/*/environ` and
+  `json.dumps(os.environ)`-style dumps are blocked. Bare `$IFS`, brace lists
+  and globs aimed at secret names (`cat .en[v]`, `cat auth.jso?`) are caught.
+- **Allow-lists:** neither the built-in allow patterns nor the host
+  `allow.json` apply to values containing `$(`, backticks, `${`, `<` or `>`
+  (`cat .env.example $(printenv)` used to bypass every vendored rule).
+- **Unknown tools:** MCP/package tools go through the shell backstops in every
+  mode. `allowed_tools` scopes match URLs by host and path segment and paths by
+  prefix, never as a substring of the input (review non-URL scopes).
+- **Performance:** worst-case inputs at the 32 KiB cap scan in milliseconds
+  (previously up to 5 s, one rule over 100 s).
+- **Packages settings:** `shellPath`, `shellCommandPrefix`, `npmCommand`,
+  `externalEditor`, `httpProxy` and `extensions` are refused in the Pi Packages
+  `settings.json`.
+
+### Security (wrapper and image)
+
+- **Immutable guard:** the guard, `AGENTS.md`, settings, `mcp.json`, `skills/`,
+  `prompts/` and `themes/` are now root-owned in the image, and `/home/coder`,
+  `~/.pi` and `~/.pi/agent` are `root:coder 1775`. Before, they were owned by
+  `coder` (uid 1000, usually the session uid), so a session could `chmod` the
+  guard writable or rename it away. `container/lock-check.sh` enforces this at
+  build time, in the entrypoint (exit 5) and in `doctor`. Images built before
+  this change fail the check: rebuild.
+- **Project directory:** it now goes through the same gate as custom mounts.
+  `run ~/.ssh`, `run ~/.config/pi-dockerized`, `run /run` and similar are
+  refused, and a symlinked `$HOME` is recognized.
+- **Mount policy:** sources in, containing or above socket directories (`/run`,
+  `/var/run`, `$XDG_RUNTIME_DIR`) or under `/proc`, `/sys`, `/dev` are refused;
+  targets may neither contain nor sit inside system paths (`/usr`, `/etc`
+  files such as `ld.so.preload`, `/bin/sh`) or the agent dir.
+- **`--untrusted`:** only `--policy strict` is accepted, `allowed_tools` is
+  cleared, and no shared state is mounted (`mcp.json`, `mcp-auth.json`,
+  `trust.json`, `mcp.log`, `.npm`, `.cache/qmd`, `.pi-lens`, `~/.claude`,
+  `~/.agents`, worktree git dir). `prompts/`/`themes/` are read-only and
+  transcripts go to `sessions-untrusted/`.
+- **Git worktrees:** the common dir is mounted only when it points back at the
+  project and passes the mount checks; never for `--untrusted`.
+- **Secrets file:** loader/runtime keys (`LD_*`, `NODE_OPTIONS`, `PATH`,
+  `PI_DOCKERIZED_*`, …) are refused. Edits are staged next to the file instead
+  of `/tmp/pi`, which is only used when owned by the user with safe permissions.
+- **GnuPG relay:** `GPG_RELAY_DIR`, `GPG_AGENT_SOCKET` and
+  `GPG_AGENT_EXTRA_SOCKET` are honored only in tests (an env var could make the
+  stale-relay cleanup delete arbitrary directories); cleanup runs only with GPG
+  enabled and only removes relay dirs. Mirror writes refuse symlinks.
+- **`audit`** strips control characters from the container-written log.
+- **Updates:** `update --verify` merges exactly the verified commit (no second
+  fetch) and, when `.github/release-signers` exists, requires a listed signer.
+  `install.sh` honors `PI_DOCKERIZED_VERIFY=1`. The image is built by the
+  updated wrapper, so it carries the new version label.
+- **Images:** `pull` verifies the signature against `image.yml` at a `vX.Y.Z`
+  tag only and refuses older images unless `--allow-downgrade`. CI pushes by
+  digest, smoke-tests amd64 and arm64 as pushed, signs and only then tags;
+  non-release runs publish `dev-<sha>`. `rollback` can be repeated, and a
+  same-image promotion keeps the real `:previous`.
+- **Supply chain:** pnpm refuses npm releases younger than 24 h; yt-dlp is
+  pinned; the Docker apt key is checked by fingerprint; the pnpm installer is
+  required to verify its tarball signature. `refresh-policies.sh` validates all
+  files before copying and pins the upstream integrity.
+- **CI:** the `GUARD_VERSION` check also runs on pushes to master and requires
+  the number to increase.
+- **Install/uninstall:** `uninstall` removes only the lines the installer wrote,
+  `--purge-config` keeps other profiles unless `--all-profiles`, and only
+  deletes directories named `pi-dockerized` (or a profile in it).
+- `exec -` refuses prompts over 120000 bytes (they are passed in argv).
+
 ### Build
 
 - Version bump: pnpm 12.16.1, uv 0.13.6, Debian `trixie-slim` base digest

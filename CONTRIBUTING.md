@@ -66,7 +66,8 @@ CI also builds nothing on the contributor's machine, but the image workflow
   deny-lists; `shell.mjs` the de-obfuscation; `selftest.mjs` the boot check;
   `balanced-excluded.json` what the `balanced` mode drops (with reasons).
   **Bump `GUARD_VERSION` in `policy.mjs` when behavior changes** — CI fails a
-  pull request that touches the guard or `policies/` without doing so.
+  pull request or a push to master that touches the guard or `policies/`
+  without raising it.
 - The extension is **baked into the image** at build time (the Dockerfile copies
   it and `policies/*.json`), so a change only takes effect after a rebuild.
 - **`policies/*.json` are vendored verbatim** from upstream opencode-policy

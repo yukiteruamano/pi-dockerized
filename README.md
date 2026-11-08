@@ -33,8 +33,11 @@ host stays protected.
 ## Security Features
 
 - **Isolated environment** — Pi only sees the mounted project directory.
-- **Baked, immutable extensions** — installed at build time, `chmod a-w` in the
-  image; the agent cannot modify its own capabilities.
+- **Baked, immutable guard** — the security extension, `AGENTS.md` and the
+  baked settings are root-owned and read-only inside root-owned sticky
+  directories, so the agent cannot edit, rename or replace them (the container
+  refuses to start otherwise). Pi Packages are host-managed and mounted
+  read-only (see below).
 - **Read-only config** — `AGENTS.md` and `extensions/` come from the image;
   `settings.json`, `mcp.json` and `models.json` are mounted read-only from the
   host. The host `settings.json` may only hold preferences: the sandbox's
@@ -42,15 +45,18 @@ host stays protected.
   settings) stops the session from starting.
 - **Security extension** — the ported upstream (`opencode-policy`) unsafe/injection pattern
   sets plus built-in backstops (secrets and credential stores, destructive
-  commands, Git hooks/config, write confinement) enforced in `strict`,
+  commands, anything under `.git`, `git config` writes, write confinement)
+  enforced in `strict`,
   `balanced` (default) or `off` modes. Quoting tricks (`cat .e''nv`) are
   de-obfuscated before matching, oversized inputs are refused, and every
   blocked call lands in an audit log (`pi-dockerized audit`).
 - **Fail closed** — the container refuses to start if the guard fails its boot
   self-test; a broken image never runs Pi without enforcement.
-- **Mount policy** — custom mounts can never expose your home, credential
-  stores, the wrapper's own config/secrets, the Docker socket or the baked
-  agent tooling (symlinks are resolved first).
+- **Mount policy** — neither the project directory nor custom mounts can expose
+  your home, credential stores, the wrapper's own config/secrets, socket
+  directories (`/run`, `/var/run`, the Docker socket), `/proc`/`/sys`/`/dev`,
+  or land on system paths or the baked agent tooling (symlinks are resolved
+  first).
 - **Non-root** — runs as your host UID/GID with `--cap-drop=ALL` and
   `no-new-privileges`; no sudo binary exists.
 - **Opt-in host access** — Docker socket, SSH and GnuPG agent forwarding are all
@@ -60,7 +66,8 @@ host stays protected.
 - **Self-update disabled** — `PI_SKIP_VERSION_CHECK=1`; `pi update` is blocked.
 - **Safe image lifecycle** — builds are smoke-tested before they replace the
   current image, the previous one is kept for `rollback`, and prebuilt images
-  are signed (`pull` verifies the signature).
+  are signed by the release workflow (`pull` verifies the signature and refuses
+  to downgrade).
 
 ## Prerequisites
 
@@ -111,10 +118,10 @@ pi-dockerized doctor           # Diagnose guard (incl. self-test), config, crede
 pi-dockerized audit [-n N|--summary|--clear]   # Tool calls the guard blocked
 pi-dockerized ps | stop NAME|--all             # Running sessions
 pi-dockerized build            # Build, smoke-test and promote the image (previous kept)
-pi-dockerized pull [TAG] [--no-verify]  # Fetch the prebuilt signed image from GHCR
+pi-dockerized pull [TAG] [--no-verify|--allow-downgrade]  # Fetch the prebuilt signed image from GHCR
 pi-dockerized rollback         # Go back to the image the last build/pull replaced
 pi-dockerized install [OPTS]   # Install/repair PATH, config, completions, aliases
-pi-dockerized uninstall [--image] [--purge-config]  # Remove the shell integration
+pi-dockerized uninstall [--image] [--purge-config [--all-profiles]]  # Remove the shell integration
 pi-dockerized update [--check|--yes|--no-build|--verify|--pi-version X]  # git pull + sync + rebuild
 pi-dockerized upgrade          # Same as update (with prompt)
 pi-dockerized version          # Wrapper, image, guard, policy-set and Pi versions
@@ -130,12 +137,13 @@ DRY_RUN=true pi-dockerized run # Print the docker command without running
 
 | Flag | Effect |
 |------|--------|
-| `--untrusted` | Strictest setup for code you do not trust: `strict` policy, `bridge` network, no SSH/GPG forwarding, no Docker socket, no custom mounts, no host allow rules |
+| `--untrusted` | Strictest setup for code you do not trust: `strict` policy, no `allowed_tools`, `bridge` network, no SSH/GPG forwarding, no Docker socket, no custom mounts, no host allow rules, no Pi Packages, no shared caches or MCP state (`.npm`, `.cache/qmd`, `mcp.json`, `mcp-auth.json`, `trust.json`, …); `prompts/`/`themes/` read-only and transcripts in a separate `sessions-untrusted/` |
 | `--policy P` | `strict` \| `balanced` \| `off` for this session only |
 | `--network N` | `host` \| `bridge` for this session only |
 | `--dir DIR` | Project directory (`exec`, `shell`) |
 
-`--untrusted` cannot be combined with `--policy off` or `--network host`. Every
+`--untrusted` only accepts `--policy strict` and cannot be combined with
+`--network host`. Every
 project session prints an `Exposure:` line summarizing what it can reach.
 
 ### Profiles
@@ -154,7 +162,13 @@ gets a `<wrapper>-guard<N>` tag. A failed build or test leaves the current image
 untouched, and `rollback` undoes a bad update. `update` pins Pi to the release in
 the Dockerfile unless you pass `--pi-version latest|x.y.z`. Before pulling,
 `update` lists the incoming commits; with `--verify` (or
-`setting.verify_updates=true`) the upstream head must carry a valid signature.
+`setting.verify_updates=true`) the upstream head must carry a valid signature,
+from a key listed in `.github/release-signers` when the checkout ships one.
+Exactly the commit that was shown (and verified) is merged, and the image is
+built by the updated wrapper. `pull` refuses an image older than the current
+one or than this checkout (wrapper or guard version) unless you pass
+`--allow-downgrade`. pnpm refuses npm releases younger than 24 h during the
+build, so a Pi release from the last day cannot be built yet.
 
 The wrapper compares the image's version label with its own and warns when the
 image is stale, or lacks the Docker CLI while `setting.docker_socket` is on.
@@ -301,6 +315,11 @@ does not exist is skipped with a warning.
 | `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
 | `~/.composio/` | idem | rw | Composio CLI (optional custom mount) |
 | `/var/run/docker.sock` | idem | rw | Docker socket (opt-in, root-equivalent) |
+
+With `--untrusted` only the project, `skills/` and `settings.json` (ro),
+`prompts/` and `themes/` (**ro**), `home/.pi/agent/sessions-untrusted/` (rw,
+mounted as `sessions/`), `auth.json` and `audit.log` (rw) are mounted; nothing
+else from the table is shared with the session.
 
 Not mounted (baked read-only in the image): `AGENTS.md`, `extensions/`.
 
