@@ -29,11 +29,22 @@ import {
   MAX_EVAL_LENGTH,
   allowedScope,
   compile,
+  inScope,
+  isAllowed,
+  resolveWriteTarget,
   selectRules,
   evaluateToolCall,
   redact,
 } from "../extensions/pi-security-guard/policy.mjs";
-import { dequote, decodeAnsiC, normalizeShell, shellVariants } from "../extensions/pi-security-guard/shell.mjs";
+import { gitConfigWrite, globTargetsSecret } from "../extensions/pi-security-guard/backstops.mjs";
+import {
+  dequote,
+  decodeAnsiC,
+  expandBraces,
+  globForm,
+  normalizeShell,
+  shellVariants,
+} from "../extensions/pi-security-guard/shell.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..");
@@ -240,6 +251,75 @@ const alwaysDeny = [
   ["read", "/home/coder/.docker/config.json"],
   ["bash", "cat ~/.git-credentials"],
   ["bash", "cat ~/.netrc"],
+  // Guard 7: every .git path is off limits (commondir, modules, worktree
+  // config and gitfiles make the host's git run attacker config).
+  ["write", ".git/commondir"],
+  ["write", ".git/modules/sub/config"],
+  ["write", ".git/modules/sub/hooks/post-checkout"],
+  ["write", ".git/config.worktree"],
+  ["write", "sub/.git"],
+  ["write", ".GIT/config"],
+  ["write", ".git/Hooks/pre-commit"],
+  ["write", "~/.bashrc"],
+  ["bash", "echo ../evil > .git/commondir"],
+  ["bash", "echo x > .git//hooks/pre-commit"],
+  ["bash", "echo x > .git/./hooks/pre-commit"],
+  ["bash", "echo x >> ./.git/modules/s/config"],
+  ["bash", "echo 'gitdir: /tmp/pi/evil' > sub/.git"],
+  ["bash", "cd .git && echo x > hooks/pre-commit"],
+  ["bash", "pushd sub/.git"],
+  ["bash", "git -C .git config core.bare false"],
+  ["bash", "ln -s .git//hooks/pre-commit innocent"],
+  ["bash", "cp x .git/modules/s/config"],
+  ["bash", "python3 -c \"open('.git/hooks/post-checkout','w').write('x')\""],
+  // git config keys that run programs through the host's git.
+  ["bash", "git config include.path ../x.cfg"],
+  ["bash", "git config diff.external ./x.sh"],
+  ["bash", "git config filter.x.clean ./x.sh"],
+  ["bash", "git config gpg.ssh.program ./x.sh"],
+  ["bash", "git config --add alias.x '!sh -c id'"],
+  ["bash", "git config --replace-all url.x.insteadOf y"],
+  ["bash", "git config set core.fsmonitor ./x"],
+  ["bash", "git config --edit"],
+  ["bash", "git config --rename-section user evil"],
+  ["bash", "git config --file x.cfg user.name y"],
+  ["bash", "git config --global core.pager less"],
+  ["bash", "git -C sub config core.hooksPath x"],
+  ["bash", "ls && git config merge.x.driver ./x.sh"],
+  ["bash", "g''it config include.path x"],
+  ["bash", "git -c include.path=x status"],
+  ["bash", "git -c filter.x.clean=./x add ."],
+  // Secrets the bash regexes missed: mcp-auth/trust, globs, braces, $IFS.
+  ["bash", "cat ~/.pi/agent/mcp-auth.json"],
+  ["bash", "cat ~/.pi/agent/trust.json"],
+  ["bash", "cat .en[v]"],
+  ["bash", "cat .en?"],
+  ["bash", "cat .e*"],
+  ["bash", "cat ~/.pi/agent/auth.jso?"],
+  ["bash", "cat ~/.pi/agent/au*.json"],
+  ["bash", "cat ~/.ssh/id_*"],
+  ["bash", "cat$IFS.env"],
+  ["bash", "cat {.env,}"],
+  ["bash", "cat .{env,x}"],
+  // Environment dumps.
+  ["bash", "cat /proc/self/task/1/environ"],
+  ["bash", "cat /proc/thread-self/environ"],
+  ["bash", "env -0"],
+  ["bash", "printenv -0"],
+  ["bash", "printenv --null"],
+  ["bash", "env -u FOO"],
+  ["bash", "env FOO=1"],
+  ["bash", "echo $(printenv)"],
+  ["bash", "echo `env`"],
+  ["bash", "python3 -c 'import os,json;print(json.dumps(dict(os.environ)))'"],
+  ["bash", "node -e 'console.log(JSON.stringify(process.env))'"],
+  ["bash", "node -e 'console.log(Object.entries(process.env))'"],
+  ["read", "/proc/self/environ"],
+  ["read", "/proc/1/task/1/environ"],
+  // Case variants open the same file on a case-insensitive host mount.
+  ["read", join(PROJECT, ".ENV")],
+  ["read", "/home/coder/.pi/agent/AUTH.JSON"],
+  ["read", join(PROJECT, "server.PEM")],
 ];
 
 // Allowed in every mode.
@@ -285,6 +365,35 @@ const alwaysAllow = [
   ["bash", "pi --version"],
   ["bash", "pi list"],
   ["bash", "pi mcp list"],
+  // Guard 7 keeps ordinary git and file work allowed.
+  ["bash", "git status"],
+  ["bash", "git add -A"],
+  ["bash", "git diff"],
+  ["bash", "git commit -m fix"],
+  ["bash", "git checkout -b feature"],
+  ["bash", "git config --get user.email"],
+  ["bash", "git config user.email"],
+  ["bash", "git config --list"],
+  ["bash", "git config --show-origin --get-regexp user"],
+  ["bash", "git config get user.name"],
+  ["bash", "git config user.name Jane"],
+  ["bash", "git config --global user.email jane@example.com"],
+  ["bash", "git config core.autocrlf input"],
+  ["bash", "git config --unset user.name"],
+  ["bash", "cat README.md"],
+  ["bash", "echo hi > out.txt"],
+  ["bash", "echo node_modules >> .gitignore"],
+  ["bash", "touch src/.gitkeep"],
+  ["bash", "cat .gitignore"],
+  ["bash", "ls .github/workflows"],
+  ["bash", "grep -rn foo --exclude-dir=.git src"],
+  ["bash", "ls *.ts"],
+  ["bash", "cat *.json"],
+  ["bash", "cat 'auth.jso?'"],
+  ["bash", "[ -f x ] && echo y"],
+  ["write", ".gitignore"],
+  ["write", ".gitattributes"],
+  ["write", ".github/workflows/ci.yml"],
 ];
 
 // Allowed in balanced/off, blocked in strict (upstream behaviour).
@@ -303,6 +412,8 @@ const devIdioms = [
   ["bash", "at least one"],
   ["bash", "node -e \"console.log(process.env.PATH)\""],
   ["bash", "env FOO=1 ./run"],
+  ["bash", "env FOO=1 node x.js"],
+  ["bash", "printenv HOME"],
   ["bash", 'python3 -c "print(os.environ.get(\\"PATH\\"))"'],
   ["bash", 'ruby -e "puts ENV.fetch(\\"PATH\\")"'],
   ["bash", 'php -r "echo $_SERVER[\\"REQUEST_URI\\"];"'],
@@ -559,12 +670,166 @@ check(
 );
 check(
   "Dockerfile bakes container/AGENTS.md",
-  readFileSync(join(repo, "Dockerfile"), "utf8").includes(
-    "COPY container/AGENTS.md /home/coder/.pi/agent/AGENTS.md",
+  /COPY (?:--chown=\S+ )?container\/AGENTS\.md \/home\/coder\/\.pi\/agent\/AGENTS\.md/.test(
+    readFileSync(join(repo, "Dockerfile"), "utf8"),
   ),
 );
 
+// Write targets reached through symlinks, dangling ones included: realpath
+// fails on a dangling link, but writing through it creates its target.
+{
+  mkdirSync(join(PROJECT, ".git/hooks"), { recursive: true });
+  const link = (target, name) => symlinkSync(target, join(PROJECT, name));
+  link(".git/hooks/pre-commit", "dangling-hook"); // target does not exist yet
+  link(join(OUTSIDE, "newfile"), "dangling-out");
+  link("../outside/newfile2", "dangling-rel");
+  link("chain2", "chain1");
+  link(join(OUTSIDE, "chained"), "chain2");
+  link("loop-b", "loop-a");
+  link("loop-a", "loop-b");
+  link("src/fresh.ts", "dangling-in"); // stays inside the project
+  link(".git", "gitdir-alias");
+  for (const mode of ["strict", "balanced", "off"]) {
+    for (const path of ["dangling-hook", "dangling-out", "dangling-rel", "chain1", "loop-a", "gitdir-alias/config"]) {
+      for (const tool of ["write", "edit"]) {
+        assert(mode, tool, path, evalInput(mode, tool, { path, content: "x" }), "deny");
+      }
+    }
+    assert(mode, "write", "dangling-in", evalInput(mode, "write", { path: "dangling-in", content: "x" }), "allow");
+  }
+  check(
+    "resolveWriteTarget follows a dangling chain",
+    resolveWriteTarget(join(PROJECT, "chain1")) === join(OUTSIDE, "chained"),
+    resolveWriteTarget(join(PROJECT, "chain1")),
+  );
+  check("resolveWriteTarget gives up on a loop", resolveWriteTarget(join(PROJECT, "loop-a")) === undefined);
+}
+
 rmSync(root, { recursive: true, force: true });
+
+// Allow rules never apply to compound values: an allow match skips every
+// vendored rule, so `cat .env.example $(...)` must not ride on it.
+{
+  const allow = compile(loadRules("allow-patterns.json"));
+  check("isAllowed accepts the plain allowed value", isAllowed(allow, "cat .env.example"));
+  for (const value of [
+    "cat .env.example $(printenv)",
+    "echo .env.example `printenv`",
+    "cat .env.example ${X}",
+    "cat .env.example <(env)",
+    "cat .env.example > /tmp/pi/x",
+    "cat .env.example < /proc/self/environ",
+    "cat .env.example && env",
+  ]) {
+    check(`isAllowed refuses ${value}`, !isAllowed(allow, value));
+  }
+  // A loose host rule cannot switch off the vendored rules through `$()`.
+  const hostAllow = [...allow, ...compile([{ id: "loose", pattern: "^cat " }])];
+  const res = evaluateToolCall({
+    tool: "bash",
+    input: { command: "cat README.md $(nmap 10.0.0.1)" },
+    cwd: PROJECT,
+    unsafePatterns: selectRules(compile(loadRules("unsafe-tool-patterns.json")), "strict"),
+    injectionPatterns: [],
+    allowPatterns: hostAllow,
+  });
+  check("host allow rule does not exempt a substitution", res?.block === true, res?.rule ?? "allowed");
+}
+
+// Unknown tools get the shell backstops over every value, in every mode: an
+// MCP server or package may expose a shell. Names are matched exactly, so
+// `Bash` is an unknown tool (strict still refuses it unless listed).
+for (const mode of ["off", "balanced"]) {
+  const call = (tool, input) =>
+    evaluateToolCall({
+      tool,
+      input,
+      cwd: PROJECT,
+      unsafePatterns: selectRules(compile(loadRules("unsafe-tool-patterns.json")), mode),
+      injectionPatterns: [],
+      allowPatterns: [],
+    });
+  check(`[${mode}] unknown shell-like tool reading auth.json`, call("run_command", { command: "cat ~/.pi/agent/auth.json" })?.block === true);
+  check(`[${mode}] Bash (capitalized) rm -rf /`, call("Bash", { command: "rm -rf /" })?.block === true);
+  check(`[${mode}] unknown tool nested value`, call("mcp_exec", { args: { argv: ["sh", "-c", "env -0"] } })?.block === true);
+  check(`[${mode}] unknown tool git config`, call("mcp_shell", { cmd: "git config core.hooksPath x" })?.rule === "backstop/git-config");
+  check(`[${mode}] unknown tool harmless input`, call("mcp_search", { q: "hello world" }) === undefined);
+}
+
+// Scoped allowed_tools: URLs are compared by host and path, never by
+// substring (a query string must not count), absolute paths by prefix.
+{
+  check("scope: query string does not count", !inScope(["github.com/myorg"], ["https://evil.example/?q=github.com/myorg"]));
+  check("scope: fragment does not count", !inScope(["github.com/myorg"], ["https://evil.example/#github.com/myorg"]));
+  check("scope: userinfo does not count", !inScope(["github.com"], ["https://github.com@evil.example/"]));
+  check("scope: host and path prefix", inScope(["github.com/myorg"], ["https://github.com/myorg/repo"]));
+  check("scope: path on a segment boundary", !inScope(["github.com/myorg"], ["https://github.com/myorg-evil/repo"]));
+  check("scope: subdomain counts", inScope(["example.com"], ["https://api.example.com/x"]));
+  check("scope: suffix lookalike does not", !inScope(["example.com"], ["https://badexample.com/x"]));
+  check("scope: every URL must be in scope", !inScope(["example.com"], ["https://example.com/a", "https://evil.example/b"]));
+  check("scope: dot-segments are normalized", !inScope(["github.com/myorg"], ["https://github.com/myorg/../evil"]));
+  check("scope: full-URL scope pins the scheme", !inScope(["https://example.com"], ["http://example.com/x"]));
+  check("scope: absolute path prefix", inScope(["/data"], ["/data/x.csv"]) && !inScope(["/data"], ["/database/x"]));
+  check("scope: path escape via ..", !inScope(["/data"], ["/data/../etc/passwd"]));
+  check("scope: an out-of-scope path is refused", !inScope(["/data"], ["/data/a", "/etc/passwd"]));
+  check("scope: free text alone does not match", !inScope(["example.com"], ["tell me about example.com"]));
+  check("scope: plain value equality", inScope(["analytics"], ["analytics"]));
+  const res = evaluateToolCall({
+    tool: "mcp_fetch",
+    input: { url: "https://evil.example/?q=github.com/myorg" },
+    cwd: "/w",
+    unsafePatterns: [],
+    injectionPatterns: [],
+    allowPatterns: [],
+    unknownTools: "deny",
+    allowedTools: ["mcp_fetch:github.com/myorg"],
+  });
+  check("strict: out-of-scope URL with the scope in its query", res?.rule === "backstop/unknown-tool-scope", res?.rule);
+}
+
+// Parsers behind the new backstops.
+check("gitConfigWrite: read with --get", gitConfigWrite("git config --get core.pager") === undefined);
+check("gitConfigWrite: single key is a read", gitConfigWrite("git config core.pager") === undefined);
+check("gitConfigWrite: safe key", gitConfigWrite("git config user.name Jane Doe") === undefined);
+check("gitConfigWrite: unsafe key", gitConfigWrite("git config core.pager less") !== undefined);
+check("gitConfigWrite: after an operator", gitConfigWrite("true && git config alias.x y") !== undefined);
+check("gitConfigWrite: not git", gitConfigWrite("echo config include.path x") === undefined);
+check("globTargetsSecret: bracket", globTargetsSecret(".en[v]") === ".env");
+check("globTargetsSecret: leading wildcard never matches a dot", globTargetsSecret("cat *nv") === undefined);
+check("globTargetsSecret: generic json glob", globTargetsSecret("cat *.json") === undefined);
+check("globForm masks quoted globs", globTargetsSecret(globForm("cat '.en?'")) === undefined);
+check("globForm keeps live globs", globTargetsSecret(globForm("cat .e''n?")) === ".env");
+check("expandBraces expands lists", expandBraces("cat {.env,}") === "cat .env " && expandBraces("a{b,c}d") === "abd acd");
+check("normalizeShell folds bare $IFS", normalizeShell("cat$IFS.env") === "cat .env" && normalizeShell("$IFSX") === "$IFSX");
+
+// Long adversarial inputs (just under the cap) stay fast: these used to take
+// seconds, or effectively forever (stacked `[^\n|;&]*` scans).
+{
+  const n = MAX_EVAL_LENGTH - 64;
+  const strictRules = selectRules(compile(loadRules("unsafe-tool-patterns.json")), "strict");
+  for (const [name, command] of [
+    ["blank run", "cat " + " ".repeat(n)],
+    ["dotted word", "git diff " + "x.".repeat(n / 2)],
+    ["repeated -y -f", "./k " + "-y -f ".repeat(n / 6)],
+    ["repeated -p", "git log -p " + "-p ".repeat(n / 3)],
+    ["many paths", "rm " + "a/b ".repeat(n / 4)],
+    ["slash dots", "rm " + "/.".repeat(n / 2)],
+    ["brackets", "cat " + "[a".repeat(n / 2)],
+    ["braces", "x " + "a{b,c}".repeat(n / 6)],
+  ]) {
+    const t0 = Date.now();
+    evaluateToolCall({
+      tool: "bash",
+      input: { command },
+      cwd: PROJECT,
+      unsafePatterns: strictRules,
+      injectionPatterns: [],
+      allowPatterns: [],
+    });
+    const ms = Date.now() - t0;
+    check(`long input stays fast: ${name}`, ms < 1000, `${ms} ms`);
+  }
+}
 
 // Scoped strict allowlist: `name` allows the tool, `name:scope+scope`
 // restricts it to inputs containing a scope. Plain names behave as before.

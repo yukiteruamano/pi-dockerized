@@ -11,7 +11,10 @@
 //   strict   — every vendored pattern is enforced as-is, and tools this policy
 //              does not model (MCP, other extensions) are refused unless listed
 //              in PI_DOCKERIZED_ALLOWED_TOOLS (`setting.allowed_tools`:
-//              `name` or `name:scope+scope`).
+//              `name` or `name:scope+scope`; a scope is `host[/path]`, a URL
+//              or an absolute path, compared by host and path prefix).
+// In every mode, tools this policy does not model also get the shell
+// backstops over each of their values (they may well run commands).
 //   balanced — cloud-tenant-specific rules, upstream `admin_bypass` rules and
 //              patterns that fire on ordinary local development are dropped,
 //              while the genuinely dangerous ones stay. (recommended)

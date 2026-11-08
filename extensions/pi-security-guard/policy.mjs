@@ -8,20 +8,22 @@
 // Layout: backstops.mjs (built-in deny-lists), shell.mjs (de-obfuscation),
 // balanced-excluded.json (what the "balanced" mode drops).
 
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import {
   DENY_BASH,
   DENY_READ,
   DENY_SECRET_PATH,
   SECRET_PATH_RE,
+  gitConfigWrite,
+  globTargetsSecret,
 } from "./backstops.mjs";
-import { normalizeShell, shellVariants } from "./shell.mjs";
+import { compactBlanks, globForm, normalizeShell, shellVariants } from "./shell.mjs";
 
 export { DENY_BASH, DENY_READ, DENY_SECRET_PATH, SECRET_PATH_RE, normalizeShell };
 
 // Bump when guard behavior changes. Single source of truth: the wrapper's
 // `version`/`doctor` read it from the image through selftest.mjs.
-export const GUARD_VERSION = 6;
+export const GUARD_VERSION = 7;
 
 // Longest value evaluated. Several vendored and backstop patterns scan with
 // `[^\n|;&]*`, which is quadratic on long lines: 100 KiB takes ~50 s. Beyond the
@@ -118,9 +120,15 @@ export function matchRule(rules, value) {
   return undefined;
 }
 
-/** True when an allow rule applies (never for chained/multi-line values). */
+// Values an allow rule never applies to: chained or multi-line commands,
+// command/process substitution, parameter expansion and redirections. Each can
+// smuggle a second command next to the allowed token (`cat .env.example
+// $(printenv)`), and an allow match skips every vendored rule for the value.
+const NOT_ALLOWABLE = /[;&|\n\r`<>]|\$[({]/;
+
+/** True when an allow rule applies (never for chained/compound values). */
 export function isAllowed(allowRules, value) {
-  if (/[;&|\n\r]/.test(value)) return false;
+  if (NOT_ALLOWABLE.test(value)) return false;
   for (const rule of allowRules) {
     if (rule.re.test(value)) return true;
   }
@@ -186,10 +194,12 @@ export const KNOWN_TOOLS = new Set([
 // Extra writable locations beyond the project root.
 export const EXTRA_WRITE_ROOTS = ["/tmp/pi"];
 
-// Files inside the project that Git executes on the host: the project
-// directory is shared with the host, so planting one is a sandbox escape.
-export const PROTECTED_WRITE_RE =
-  /(^|\/)\.git\/(?:hooks(?:\/|$)|config$|info\/attributes$)|(^|\/)\.gitmodules$/;
+// Git metadata inside the project: the project directory is shared with the
+// host, and git there runs what its git dir names (hooks, config, commondir,
+// modules/*/config, config.worktree, a `.git` gitfile pointing elsewhere), so
+// any write under a `.git` component is a sandbox escape. Case-insensitive:
+// host bind mounts can be (macOS).
+export const PROTECTED_WRITE_RE = /(^|\/)\.git(\/|$)|(^|\/)\.gitmodules$/i;
 
 // Input fields that carry file paths. For write/edit the other strings are file
 // contents (`content`, `oldText`, `newText`, ...): they are data, not targets,
@@ -231,12 +241,12 @@ const vendoredBlock = (rule) =>
   );
 
 // Vendored unsafe patterns (first match wins) over every value of the call.
-// Shell commands are also tested in their de-obfuscated forms.
-function scanVendored({ tool, strings, unsafePatterns, allowPatterns }) {
+// Shell-like values are also tested in their de-obfuscated forms.
+function scanVendored({ shellLike, strings, unsafePatterns, allowPatterns }) {
   for (const value of strings) {
     if (typeof value !== "string" || value === "") continue;
     if (isAllowed(allowPatterns, value)) continue;
-    const forms = tool === "bash" ? shellVariants(value) : [value];
+    const forms = shellLike ? shellVariants(value) : [value];
     for (const form of forms) {
       const rule = matchRule(unsafePatterns, form);
       if (rule) return vendoredBlock(rule);
@@ -246,8 +256,23 @@ function scanVendored({ tool, strings, unsafePatterns, allowPatterns }) {
 }
 
 // Built-in backstops for shell commands, covering gaps the pattern sets miss.
+// Also run over every string of tools this policy does not model.
 function scanShellBackstops(command) {
+  const glob = globTargetsSecret(globForm(command));
+  if (glob) {
+    return blocked(
+      `Blocked by pi-dockerized security policy: glob can expand to ${glob}: ${command}`,
+      "backstop/secret-glob",
+    );
+  }
   for (const form of shellVariants(command)) {
+    const config = gitConfigWrite(form);
+    if (config) {
+      return blocked(
+        `Blocked by pi-dockerized security policy: ${config} can run programs through the host's git (allowed: user.name/email, init.defaultBranch, pull/push and color preferences, core.autocrlf/eol)`,
+        "backstop/git-config",
+      );
+    }
     for (const pattern of DENY_BASH) {
       if (pattern.test(form)) {
         return blocked(
@@ -283,24 +308,69 @@ function scanReadTargets(strings) {
   return undefined;
 }
 
-// Writes stay inside the project (or scratch dir) and never touch the files
-// Git runs on the host. Symlinks are resolved so a link cannot escape: the
-// literal path, its real target and the real parent are all checked (the
-// target may not exist yet).
+// Symlink hops followed before a write target counts as unresolvable.
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Where a write to absolute path `p` lands, following symlinks the way the
+ * kernel does, including a dangling one (realpath fails on it, but writing
+ * through it creates its target). Returns undefined when the chain is too
+ * long or unreadable: the caller must refuse.
+ */
+export function resolveWriteTarget(p, hops = { left: MAX_LINK_HOPS }) {
+  if (p === "/") return "/";
+  const real = tryRealpath(p);
+  if (real) return real;
+  const slash = p.lastIndexOf("/");
+  const parent = resolveWriteTarget(p.slice(0, slash) || "/", hops);
+  if (parent === undefined) return undefined;
+  const full = (parent === "/" ? "" : parent) + "/" + p.slice(slash + 1);
+  let stat;
+  try {
+    stat = lstatSync(full);
+  } catch {
+    return full; // does not exist yet: the write creates exactly this path
+  }
+  if (!stat.isSymbolicLink()) return full;
+  if (--hops.left < 0) return undefined;
+  let link;
+  try {
+    link = readlinkSync(full);
+  } catch {
+    return undefined;
+  }
+  const next = link.startsWith("/") ? link : parent + "/" + link;
+  return resolveWriteTarget(normalizeLexical(next), hops);
+}
+
+// Writes stay inside the project (or scratch dir) and never touch git
+// metadata. Both the literal path and where it really lands (symlinks
+// followed, dangling ones included) are checked. A leading `~` is refused:
+// the guard cannot know whether the tool expands it.
 function scanWriteTargets(strings, roots) {
   for (const path of strings) {
     if (typeof path !== "string" || path === "") continue;
+    if (path.startsWith("~")) {
+      return blocked(
+        "Blocked by pi-dockerized security policy: home-relative write path (use a project path): " +
+          path,
+        "backstop/write-confinement",
+      );
+    }
     const absolute = path.startsWith("/")
       ? normalizeLexical(path)
       : normalizeLexical(roots[0] + "/" + path);
-    const candidates = [absolute];
-    const real = tryRealpath(absolute);
-    if (real) candidates.push(real);
-    const parent = tryRealpath(absolute.replace(/\/[^/]*$/, "") || "/");
-    if (parent) candidates.push(parent + "/" + absolute.replace(/.*\//, ""));
+    const target = resolveWriteTarget(absolute);
+    if (target === undefined) {
+      return blocked(
+        "Blocked by pi-dockerized security policy: cannot resolve the write target: " + path,
+        "backstop/write-confinement",
+      );
+    }
+    const candidates = [absolute, target];
     if (candidates.some((c) => PROTECTED_WRITE_RE.test(c))) {
       return blocked(
-        "Blocked by pi-dockerized security policy: Git hooks/config run on the host: " +
+        "Blocked by pi-dockerized security policy: git metadata runs on the host: " +
           path,
         "backstop/protected-write",
       );
@@ -319,8 +389,8 @@ function scanWriteTargets(strings, roots) {
 /**
  * Scope entries in `allowedTools` for one unknown tool. Entries are `name`
  * (or `name:*`, same thing: the tool is allowed, its values still scanned)
- * or `name:scope1+scope2` (allowed only when a scope substring occurs in the
- * input). Plain names keep working exactly as before. Returns null when the
+ * or `name:scope1+scope2` (allowed only inside a scope, see inScope).
+ * Plain names keep working exactly as before. Returns null when the
  * tool is not listed, "*" for unrestricted, or the scope array (last scoped
  * entry wins, but a later unrestricted entry still overrides it).
  */
@@ -342,6 +412,65 @@ export function allowedScope(allowedTools, tool) {
   return scoped;
 }
 
+const parseUrl = (value) => {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return undefined;
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+};
+
+// Path prefix on a segment boundary: /data covers /data and /data/x, never
+// /database.
+const underPath = (path, prefix) => {
+  const base = prefix.replace(/\/+$/, "");
+  return path === base || path.startsWith(base + "/") || base === "";
+};
+
+/**
+ * True when a URL value lies inside one scope. A scope is `host[/path]`
+ * (`github.com/myorg`; subdomains of the host count), a full URL, or an
+ * absolute path (matches nothing here). Only host and path are compared, so
+ * the scope text in a query string or fragment does not count.
+ */
+function urlInScope(url, scope) {
+  const parsed = parseUrl(scope) ?? parseUrl("https://" + scope);
+  if (!parsed || scope.startsWith("/")) return false;
+  const host = url.hostname.toLowerCase();
+  const scopeHost = parsed.hostname.toLowerCase();
+  if (host !== scopeHost && !host.endsWith("." + scopeHost)) return false;
+  if (parseUrl(scope) && parsed.protocol !== url.protocol) return false;
+  return underPath(normalizeLexical(url.pathname), normalizeLexical(parsed.pathname));
+}
+
+/**
+ * Whether a tool call stays inside its scopes: every URL and every absolute
+ * path among its values must be inside one scope, and at least one value must
+ * be (URLs and paths by the rules above, other values by equality or a
+ * `scope/` prefix). Free text (queries, messages) is otherwise unconstrained.
+ */
+export function inScope(scopes, strings) {
+  let matched = false;
+  for (const value of strings) {
+    if (typeof value !== "string" || value === "") continue;
+    const url = parseUrl(value);
+    if (url) {
+      if (!scopes.some((s) => urlInScope(url, s))) return false;
+      matched = true;
+    } else if (value.startsWith("/")) {
+      const path = normalizeLexical(value);
+      if (!scopes.some((s) => s.startsWith("/") && underPath(path, normalizeLexical(s)))) {
+        return false;
+      }
+      matched = true;
+    } else if (scopes.some((s) => value === s || value.startsWith(s + "/"))) {
+      matched = true;
+    }
+  }
+  return matched;
+}
+
 /**
  * Evaluate one Pi tool call against the security policy.
  * Returns `{ block: true, reason, rule }` to block, or `undefined` to allow.
@@ -350,7 +479,8 @@ export function allowedScope(allowedTools, tool) {
  * (MCP tools, other extensions): "scan" runs the vendored patterns over their
  * values, "deny" also refuses any tool not listed in `allowedTools` (see
  * allowedScope: `name` allows the tool, `name:scope+scope` restricts it to
- * inputs containing a scope).
+ * inputs inside a scope, see inScope). Unknown tools always get the shell
+ * backstops over every value: an MCP or package tool may well run commands.
  * @param {{
  *   tool: string, input: unknown, cwd: string,
  *   unsafePatterns: any[], injectionPatterns: any[], allowPatterns: any[],
@@ -368,9 +498,10 @@ export function evaluateToolCall({
   allowedTools = [],
 }) {
   const obj = input ?? {};
-  const strings = inputStrings(tool, obj);
-  const joined = strings.join(" ");
+  const rawStrings = inputStrings(tool, obj);
   const known = KNOWN_TOOLS.has(tool);
+  // Shell-like: the shell tools and anything unknown (`Bash`, `run_command`).
+  const shellLike = SHELL_TOOLS.has(tool) || !known;
 
   if (!known && unknownTools === "deny") {
     const scope = allowedScope(allowedTools, tool);
@@ -380,7 +511,7 @@ export function evaluateToolCall({
         "backstop/unknown-tool",
       );
     }
-    if (scope !== "*" && !scope.some((s) => joined.includes(s))) {
+    if (scope !== "*" && !inScope(scope, rawStrings)) {
       return blocked(
         `Blocked by pi-dockerized security policy: tool "${tool}" is outside its allowed scope in strict mode (setting.allowed_tools)`,
         "backstop/unknown-tool-scope",
@@ -391,7 +522,12 @@ export function evaluateToolCall({
   // Cap each value first: one huge field (e.g. edit oldText under an unknown
   // schema, where every string is evaluated) must not reach the quadratic
   // matchers. The joined total stays capped too, so many small values cannot
-  // smuggle an unbounded scan either.
+  // smuggle an unbounded scan either. Shell-like values are compacted first:
+  // blank runs change no verdict but feed the quadratic matchers.
+  const strings = shellLike
+    ? rawStrings.map((s) => (typeof s === "string" ? compactBlanks(s) : s))
+    : rawStrings;
+  const joined = strings.join(" ");
   const tooLongValue = strings.find(
     (s) => typeof s === "string" && s.length > MAX_EVAL_LENGTH,
   );
@@ -417,13 +553,15 @@ export function evaluateToolCall({
   );
 
   if ((TOOL_ACTIONS.has(tool) || !known) && unsafePatterns.length > 0) {
-    const hit = scanVendored({ tool, strings, unsafePatterns, allowPatterns });
+    const hit = scanVendored({ shellLike, strings, unsafePatterns, allowPatterns });
     if (hit) return hit;
   }
 
+  const command =
+    typeof obj.command === "string" ? compactBlanks(obj.command) : joined;
+
   // Prompt-injection patterns only for free-text (shell) inputs.
   if (INJECTION_ACTIONS.has(tool) && injectionPatterns.length > 0) {
-    const command = typeof obj.command === "string" ? obj.command : joined;
     if (!isAllowed(allowPatterns, command)) {
       const rule = matchRule(injectionPatterns, command);
       if (rule) return vendoredBlock(rule);
@@ -431,8 +569,14 @@ export function evaluateToolCall({
   }
 
   if (SHELL_TOOLS.has(tool)) {
-    const hit = scanShellBackstops(typeof obj.command === "string" ? obj.command : joined);
+    const hit = scanShellBackstops(command);
     if (hit) return hit;
+  } else if (!known) {
+    for (const value of strings) {
+      if (typeof value !== "string" || value === "") continue;
+      const hit = scanShellBackstops(value);
+      if (hit) return hit;
+    }
   }
 
   if (READ_TOOLS.has(tool)) {

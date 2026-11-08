@@ -11,9 +11,10 @@
 //                                  defaults when missing, then enforce
 //   ext-agent.mjs enforce <dir>    reapply the security keys, keep everything else
 //   ext-agent.mjs check <file> [--host]
-//                                  exit 1 unless <file> holds the security keys;
-//                                  --host also rejects keys that are not
-//                                  preferences (see PREFERENCE_KEYS)
+//                                  exit 1 unless <file> holds the security keys
+//                                  and none of PACKAGE_DENIED_KEYS; --host also
+//                                  rejects keys that are not preferences (see
+//                                  PREFERENCE_KEYS)
 //
 // `seed`/`enforce` run in the installer container after every `pi install`;
 // `check` runs in entrypoint.sh before every session and fails closed.
@@ -85,6 +86,18 @@ export const PREFERENCE_KEYS = [
   "enabledModels",
 ];
 
+// Keys the packages file (written by `pi install`, and by any install script
+// the package runs) may never carry: they run commands, load code from a path
+// or route traffic. `pi install` itself only writes `packages`.
+export const PACKAGE_DENIED_KEYS = [
+  "shellPath",
+  "shellCommandPrefix",
+  "npmCommand",
+  "externalEditor",
+  "httpProxy",
+  "extensions",
+];
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 function readJson(path) {
@@ -96,8 +109,9 @@ function readJson(path) {
 }
 
 /**
- * Problems with `settings`: security keys that differ from `base`, and, with
- * `host`, keys that are neither security keys nor preferences.
+ * Problems with `settings`: security keys that differ from `base`, keys from
+ * PACKAGE_DENIED_KEYS, and, with `host`, keys that are neither security keys
+ * nor preferences.
  */
 export function violations(settings, base, { host = false } = {}) {
   if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
@@ -107,17 +121,23 @@ export function violations(settings, base, { host = false } = {}) {
     (key) =>
       `${key} is ${JSON.stringify(settings[key])}, expected ${JSON.stringify(base[key])}`,
   );
-  if (!host) return pinned;
+  if (!host) {
+    const denied = PACKAGE_DENIED_KEYS.filter((key) => key in settings).map(
+      (key) => `${key} may not be set (it runs commands, loads code or routes traffic)`,
+    );
+    return [...pinned, ...denied];
+  }
   const foreign = Object.keys(settings)
     .filter((key) => !SECURITY_KEYS.includes(key) && !PREFERENCE_KEYS.includes(key))
     .map((key) => `${key} is not a host setting`);
   return [...pinned, ...foreign];
 }
 
-/** `settings` with the security keys of `base` applied over it. */
+/** `settings` with the security keys of `base` applied, denied keys dropped. */
 export function enforced(settings, base) {
   const out = { ...settings };
   for (const key of SECURITY_KEYS) out[key] = base[key];
+  for (const key of PACKAGE_DENIED_KEYS) delete out[key];
   return out;
 }
 

@@ -150,6 +150,23 @@ const dir = installExtension("ext");
     PI_DOCKERIZED_ALLOWED_TOOLS: "mcp_fetch:example.com",
   });
   check("strict scoped entry blocks out-of-scope input", scopedOut.results?.[0]?.block === true);
+  const scopeInQuery = runEvents(
+    dir,
+    [{ tool: "mcp_fetch", input: { url: "https://evil.test/?q=example.com" } }],
+    { PI_DOCKERIZED_POLICY: "strict", PI_DOCKERIZED_ALLOWED_TOOLS: "mcp_fetch:example.com" },
+  );
+  check("strict scope is not a substring match", scopeInQuery.results?.[0]?.block === true);
+  // Shell-like unknown tools get the backstops in every mode.
+  const shellish = runEvents(
+    dir,
+    [
+      { tool: "run_command", input: { command: "cat ~/.pi/agent/auth.json" } },
+      { tool: "Bash", input: { command: "echo x > .git/commondir" } },
+    ],
+    { PI_DOCKERIZED_POLICY: "off" },
+  );
+  check("off: unknown tool reading auth.json is blocked", shellish.results?.[0]?.block === true);
+  check("off: capitalized Bash writing .git is blocked", shellish.results?.[1]?.block === true);
 }
 
 // --- Host allow file ---------------------------------------------------------------------
@@ -167,6 +184,14 @@ const dir = installExtension("ext");
   writeFileSync(allowFile, JSON.stringify([{ id: "all", pattern: ".*", reason: "x" }]));
   const overreach = runEvents(dir, [bash("cat .env")], { PI_DOCKERIZED_ALLOW_FILE: allowFile });
   check("allow file never overrides the backstops", overreach.results?.[0]?.block === true);
+
+  // A loose host rule cannot exempt a command substitution riding on it.
+  writeFileSync(allowFile, JSON.stringify([{ id: "loose", pattern: "^cat ", reason: "x" }]));
+  const smuggled = runEvents(dir, [bash("cat README.md $(nmap 10.0.0.1)")], {
+    PI_DOCKERIZED_ALLOW_FILE: allowFile,
+    PI_DOCKERIZED_POLICY: "strict",
+  });
+  check("allow file never exempts a substitution", smuggled.results?.[0]?.block === true);
 
   writeFileSync(allowFile, "{ not json");
   const broken = runEvents(dir, [bash("cat .env")], { PI_DOCKERIZED_ALLOW_FILE: allowFile });
