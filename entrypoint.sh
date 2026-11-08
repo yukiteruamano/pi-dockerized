@@ -60,6 +60,14 @@ case "${1:-}" in
         echo "Fix the host settings.json (home/.pi/agent/, or ext-agent/ with Pi Packages), or remove it to get the defaults." >&2
         exit 5 # E_GUARD: security-guard refusal (stable code, see lib/config/core.sh)
     fi
+    # The guard (and AGENTS.md) must be root-owned and out of the session's
+    # reach: a guard the session can edit or rename away protects nothing
+    # after the next /reload.
+    if ! /usr/local/lib/pi-dockerized/lock-check.sh "$PI_CODING_AGENT_DIR"; then
+        echo "pi-dockerized: the security guard is not locked against this session; refusing to start." >&2
+        echo "Rebuild the image ('pi-dockerized build') and run 'pi-dockerized doctor'." >&2
+        exit 5 # E_GUARD: security-guard refusal (stable code, see lib/config/core.sh)
+    fi
     if ! node "$GUARD_DIR/selftest.mjs"; then
         echo "pi-dockerized: the security guard failed its self-test; refusing to start." >&2
         echo "Rebuild the image ('pi-dockerized build') and run 'pi-dockerized doctor'." >&2

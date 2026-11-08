@@ -35,6 +35,19 @@ ARG QMD_VERSION=2.8.3
 ARG NVM_INSTALL_SHA256=48a0eee9a60e07422dce0eb5774754c83889570ca1ee2566c516acbe8af03a9e
 ARG UV_INSTALL_SHA256=f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7
 ARG PNPM_INSTALL_SHA256=53d3ad6ef67d49d6951f3326bd3180e5c504c8f695bcdf73bb61ec7a4d4c9407
+# yt-dlp release (PyPI). Pinned so a rebuild never pulls an unreviewed release;
+# Renovate bumps it, which also keeps the extractors fresh.
+# renovate: datasource=pypi depName=yt-dlp
+ARG YT_DLP_VERSION=2026.10.26
+# Fingerprint of the Docker apt repository's signing key (primary key). The key
+# is downloaded over TLS and only trusted when it matches.
+ARG DOCKER_GPG_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+# pnpm refuses to resolve any package (including the transitive dependencies of
+# Pi and qmd, which have no lockfile here) published less than this many minutes
+# ago: a freshly hijacked release has time to be caught and yanked first. The
+# pinned top-level releases must be at least this old too (Renovate waits longer;
+# see renovate.json). Exposed to the RUN steps only, not to the running image.
+ARG PNPM_CONFIG_MINIMUM_RELEASE_AGE=1440
 # The Docker CLI is only useful with the host socket mounted (setting.docker_socket).
 # `pi-dockerized build` sets this from that setting.
 ARG INSTALL_DOCKER_CLI=true
@@ -65,10 +78,15 @@ RUN apt-get update && apt-get install -y \
 # Install Docker CLI only (uses host Docker daemon via mounted socket), and only
 # when INSTALL_DOCKER_CLI=true: without the socket it is dead weight and extra
 # attack surface. We don't need docker-ce (daemon) or containerd.io.
+# The repository key must be exactly one primary key with the pinned fingerprint.
 RUN if [ "$INSTALL_DOCKER_CLI" = true ]; then \
       install -m 0755 -d /etc/apt/keyrings && \
-      curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
-      chmod a+r /etc/apt/keyrings/docker.asc && \
+      curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.asc && \
+      gpg --show-keys --with-colons /tmp/docker.asc > /tmp/docker.keys && \
+      test "$(awk -F: '$1 == "pub"' /tmp/docker.keys | wc -l)" -eq 1 && \
+      test "$(awk -F: '$1 == "fpr" { print $10; exit }' /tmp/docker.keys)" = "$DOCKER_GPG_FINGERPRINT" && \
+      install -m 0644 /tmp/docker.asc /etc/apt/keyrings/docker.asc && \
+      rm -f /tmp/docker.asc /tmp/docker.keys && \
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
       $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
       tee /etc/apt/sources.list.d/docker.list > /dev/null && \
@@ -129,7 +147,12 @@ ENV PNPM_HOME="/home/coder/.local/share/pnpm"
 # packages" section)
 ENV PNPM_CONFIG_VIRTUAL_STORE_TYPE="project"
 
-RUN curl -fsSLo /tmp/pnpm-install.sh https://get.pnpm.io/install.sh && \
+# The installer checks the pnpm tarball against npm's registry signature with a
+# key pinned inside the script, but silently drops to a checksum-only check when
+# openssl is missing: require it (ca-certificates ships it) so that never happens.
+# The uv installer likewise carries the per-platform sha256 of its binaries.
+RUN command -v openssl >/dev/null && \
+    curl -fsSLo /tmp/pnpm-install.sh https://get.pnpm.io/install.sh && \
     echo "${PNPM_INSTALL_SHA256}  /tmp/pnpm-install.sh" | sha256sum -c - && \
     env PNPM_VERSION="${PNPM_VERSION}" ENV="$HOME/.bashrc" SHELL="$(which bash)" sh /tmp/pnpm-install.sh && \
     rm -f /tmp/pnpm-install.sh && \
@@ -143,12 +166,13 @@ ENV PATH="$PNPM_HOME/bin:$NVM_DIR/default:/home/coder/.local/bin:$PATH"
 
 # Install yt-dlp (YouTube stream URLs for pi-web-access frame extraction) as an
 # isolated tool via uv (upstream ships it on PyPI; distro packages lag behind
-# extractor fixes). Unpinned on purpose so rebuilds pick up fresh extractors.
-# shortcut: unpinned yt-dlp, pin with `uv tool install yt-dlp@<ver>` if builds must be reproducible.
-RUN uv tool install yt-dlp && yt-dlp --version
+# extractor fixes). Pinned by YT_DLP_VERSION (Renovate keeps it current).
+RUN uv tool install "yt-dlp==${YT_DLP_VERSION}" && yt-dlp --version
 
 # NVM installs the current Node LTS and the Docker apt repo tracks `stable` on
-# purpose: both follow upstream security fixes. Pi, uv, pnpm and nvm are pinned.
+# purpose: both follow upstream security fixes. Pi, qmd, yt-dlp, uv, pnpm and
+# nvm are pinned; the npm dependencies of Pi and qmd are resolved at build time
+# under PNPM_CONFIG_MINIMUM_RELEASE_AGE.
 
 # Install qmd (on-device markdown search engine) globally with pnpm. pnpm skips
 # dependency install scripts unless allowed; these are the native modules qmd
@@ -177,64 +201,65 @@ RUN test "$(pi --version 2>&1 | tail -n 1)" != "0.0.0"
 ENV PI_CODING_AGENT_DIR="/home/coder/.pi/agent"
 # Do NOT set PI_PACKAGE_DIR: Pi reads its own package.json (version), themes and
 # docs from it, so overriding it makes `pi --version` report 0.0.0.
-RUN mkdir -p /home/coder/.pi/agent/extensions \
-    /home/coder/.pi/agent/skills \
-    /home/coder/.pi/agent/prompts \
-    /home/coder/.pi/agent/themes \
-    /home/coder/.pi/agent/sessions \
-    /home/coder/.cache/qmd \
-    /home/coder/.npm && \
-    printf '{\n  "mcpServers": {}\n}\n' > /home/coder/.pi/agent/mcp.json && \
-    printf '{}\n' > /home/coder/.pi/agent/auth.json && \
-    printf '{}\n' > /home/coder/.pi/agent/mcp-auth.json && \
-    printf '{}\n' > /home/coder/.pi/agent/trust.json && \
-    : > /home/coder/.pi/agent/mcp.log
 
 # Seed the baked settings (security defaults) and the guard. Pi Packages are NOT
 # installed here: `pi-dockerized extensions install` runs the official
 # `pi install` in a throwaway container against a host directory (ext-agent/),
 # which sessions mount read-only over the agent's settings.json, npm/ and git/.
 # Installing at build time meant re-fetching them on every rebuild.
-# COPY creates root-owned files regardless of USER, so this block runs as root
-# and fixes ownership; the lock step below runs as coder again.
+#
+# Ownership is what makes the baked resources immutable, not just missing write
+# bits: the session runs as the host uid (often 1000, i.e. `coder` itself) and
+# joins the `coder` group, and an owner can always chmod its files back. So the
+# guard, settings.json, AGENTS.md, mcp.json, skills/, prompts/ and themes/ are
+# root-owned and read-only, and so is every directory above them
+# (/home/coder, ~/.pi, ~/.pi/agent): those are root:coder 1775, where the
+# session may still create the entries Pi and its tools need (a tool cache,
+# lock files, dotfiles in $HOME) but, with the sticky bit, cannot rename or
+# delete a root-owned entry such as extensions/ or AGENTS.md. Only the runtime
+# state (sessions/, auth.json, mcp-auth.json, trust.json, mcp.log, ~/.npm,
+# ~/.cache) stays coder-owned and group-writable; the wrapper bind-mounts it from
+# the host, and keeping it writable means Pi still starts if a mount is missing.
+# entrypoint.sh refuses to start when this lock does not hold (lock-check.sh).
 USER root
-COPY container/settings.base.json /home/coder/.pi/agent/settings.json
-COPY container/AGENTS.md /home/coder/.pi/agent/AGENTS.md
-COPY extensions/pi-security-guard /home/coder/.pi/agent/extensions/pi-security-guard
-COPY policies/unsafe-tool-patterns.json \
+COPY --chown=root:root container/settings.base.json /home/coder/.pi/agent/settings.json
+COPY --chown=root:root container/AGENTS.md /home/coder/.pi/agent/AGENTS.md
+COPY --chown=root:root extensions/pi-security-guard /home/coder/.pi/agent/extensions/pi-security-guard
+COPY --chown=root:root \
+     policies/unsafe-tool-patterns.json \
      policies/prompt-injection-patterns.json \
      policies/allow-patterns.json \
      policies/VERSION \
      /home/coder/.pi/agent/extensions/pi-security-guard/policies/
 # Diagnostics run by `pi-dockerized doctor` / `auth`, the `pi install` wrapper
-# and settings guard used by `pi-dockerized extensions`, and a reference copy of
-# the baked settings (the agent's own settings.json can be shadowed by the host's
-# ext-agent one): root-owned, so the session cannot edit them (the executable
-# bit of the scripts is set in git).
-COPY container/doctor.sh container/auth-check.sh container/ext-install.sh container/ext-agent.mjs /usr/local/lib/pi-dockerized/
+# and settings guard used by `pi-dockerized extensions`, the lock check run by
+# the entrypoint, and a reference copy of the baked settings (the agent's own
+# settings.json can be shadowed by the host's ext-agent one): root-owned in
+# root-owned /usr/local, so the session cannot edit them (the executable bit of
+# the scripts is set in git).
+COPY container/doctor.sh container/auth-check.sh container/ext-install.sh container/ext-agent.mjs container/lock-check.sh /usr/local/lib/pi-dockerized/
 COPY container/settings.base.json /usr/local/lib/pi-dockerized/settings.base.json
-RUN chown -R coder:coder /home/coder/.pi /home/coder/.npm /home/coder/.cache && \
-    chmod -R g+rwX /home/coder/.pi /home/coder/.npm /home/coder/.cache
+RUN agent=/home/coder/.pi/agent && \
+    mkdir -p "$agent/skills" "$agent/prompts" "$agent/themes" "$agent/sessions" \
+      /home/coder/.cache/qmd /home/coder/.npm && \
+    printf '{\n  "mcpServers": {}\n}\n' > "$agent/mcp.json" && \
+    printf '{}\n' > "$agent/auth.json" && \
+    printf '{}\n' > "$agent/mcp-auth.json" && \
+    printf '{}\n' > "$agent/trust.json" && \
+    : > "$agent/mcp.log" && \
+    chown -R root:root "$agent" && \
+    chmod -R a-w "$agent/extensions" "$agent/skills" "$agent/prompts" "$agent/themes" \
+      "$agent/settings.json" "$agent/AGENTS.md" "$agent/mcp.json" && \
+    chown -R coder:coder "$agent/sessions" "$agent/auth.json" "$agent/mcp-auth.json" \
+      "$agent/trust.json" "$agent/mcp.log" /home/coder/.npm /home/coder/.cache && \
+    chmod -R g+rwX "$agent/sessions" "$agent/auth.json" "$agent/mcp-auth.json" \
+      "$agent/trust.json" "$agent/mcp.log" /home/coder/.npm /home/coder/.cache && \
+    chown root:coder /home/coder /home/coder/.pi "$agent" && \
+    chmod 1775 /home/coder /home/coder/.pi "$agent"
 USER coder
-
-# Lock the baked *resources* read-only. The runtime user joins the image's
-# `coder` group (via --group-add), so removing write bits makes extensions,
-# settings, AGENTS.md, prompts, themes and the package store immutable to the
-# agent. The writable state (sessions/, auth.json, mcp-auth.json,
-# trust.json, mcp.log) is intentionally left writable in the image and is
-# bind-mounted read-write from the host at run time; keeping it writable also
-# means Pi still starts if a state mount is ever missing.
-# Root is needed to strip write bits from the root-owned COPY results.
-USER root
-RUN chmod -R a-w \
-      /home/coder/.pi/agent/extensions \
-      /home/coder/.pi/agent/prompts \
-      /home/coder/.pi/agent/themes && \
-    chmod a-w \
-      /home/coder/.pi/agent/settings.json \
-      /home/coder/.pi/agent/AGENTS.md \
-      /home/coder/.pi/agent/mcp.json
-USER coder
+# Fail the build, not the first session, when the lock does not hold for the
+# image's own user (uid 1000, the common host uid).
+RUN /usr/local/lib/pi-dockerized/lock-check.sh
 
 # Image metadata: `pi-dockerized` compares the version label with the wrapper's
 # to notice a stale image, and the docker-cli label to notice a missing CLI.

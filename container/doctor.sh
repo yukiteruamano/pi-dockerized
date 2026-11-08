@@ -55,11 +55,20 @@ if [ -w "$agent/skills" ]; then
 else
     note "skills: read-only"
 fi
-if [ -w "$agent/extensions" ] || [ -w "$agent/settings.json" ]; then
-    note "baked agent files: WRITABLE (expected read-only)"
+# Missing write bits are not enough: an owner can chmod them back, and a
+# writable non-sticky parent lets the session rename the guard away. Check
+# ownership the way the entrypoint enforces it.
+if lock_out=$(/usr/local/lib/pi-dockerized/lock-check.sh "$agent" 2>&1); then
+    note "baked guard and AGENTS.md: root-owned and locked"
+else
+    note "baked guard and AGENTS.md: NOT LOCKED ($lock_out)"
+    status=1
+fi
+if [ -w "$agent/settings.json" ]; then
+    note "settings.json: WRITABLE (expected read-only)"
     status=1
 else
-    note "baked agent files: read-only"
+    note "settings.json: read-only"
 fi
 
 echo "== pi packages =="
