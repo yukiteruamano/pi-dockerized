@@ -11,6 +11,10 @@ set -e
 #   --apply       write the changes (default: report only)
 #   --no-verify   skip the registry integrity check (not recommended)
 #
+# The integrity of every applied release is recorded in policies/.upstream-integrity;
+# fetching that same version again must give the same bytes, whatever the
+# registry says now.
+#
 # After --apply, bump GUARD_VERSION in extensions/pi-security-guard/policy.mjs
 # (behavior changed) and update policies/README.md if the upstream version moved.
 
@@ -69,19 +73,27 @@ if [ -z "$source_path" ]; then
         echo "error: npm is required to fetch the package (or pass --from)" >&2
         exit 1
     }
-    (cd "$work" && npm pack "opencode-policy@$version" --silent >/dev/null)
-    tgz=$(echo "$work"/opencode-policy-*.tgz)
+    # Resolve `latest` (or the version given) once, then fetch and check exactly
+    # that release: separate lookups could each see a different `latest`.
     resolved=$(npm view "opencode-policy@$version" version 2>/dev/null) || resolved=""
-    if [ -n "$resolved" ]; then
-        pinned="$(cat "$POLICIES_DIR/.upstream-version" 2>/dev/null || true)"
-        if [ -n "$pinned" ] && [ "$pinned" != "$resolved" ]; then
-            echo "Upstream moved since the last refresh: $pinned -> $resolved"
-        elif [ -z "$pinned" ]; then
-            echo "Upstream version: $resolved"
-        fi
+    if ! [[ "$resolved" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+        echo "error: cannot resolve opencode-policy@$version to one release (got '$resolved')" >&2
+        exit 1
     fi
+    pinned="$(cat "$POLICIES_DIR/.upstream-version" 2>/dev/null || true)"
+    if [ -n "$pinned" ] && [ "$pinned" != "$resolved" ]; then
+        echo "Upstream moved since the last refresh: $pinned -> $resolved"
+    elif [ -z "$pinned" ]; then
+        echo "Upstream version: $resolved"
+    fi
+    (cd "$work" && npm pack "opencode-policy@$resolved" --silent >/dev/null)
+    tgz="$work/opencode-policy-$resolved.tgz"
+    [ -f "$tgz" ] || {
+        echo "error: npm pack did not produce $tgz" >&2
+        exit 1
+    }
     if [ "$verify" = true ]; then
-        want=$(npm view "opencode-policy@$version" dist.integrity 2>/dev/null) || want=""
+        want=$(npm view "opencode-policy@$resolved" dist.integrity 2>/dev/null) || want=""
         if [ -z "$want" ]; then
             echo "error: cannot read dist.integrity for opencode-policy@$version; refusing unverified fetch (use --no-verify to override)" >&2
             exit 1
@@ -100,8 +112,17 @@ if [ -z "$source_path" ]; then
             exit 1
         fi
         echo "Verified $tgz against the registry."
+        # The registry vouching for its own tarball only catches corruption;
+        # the integrity recorded when this release was last applied catches a
+        # release whose bytes changed since.
+        recorded="$(awk -v v="$resolved" '$1 == v { print $2 }' "$POLICIES_DIR/.upstream-integrity" 2>/dev/null || true)"
+        if [ -n "$recorded" ] && [ "$recorded" != "$got" ]; then
+            echo "error: opencode-policy@$resolved no longer matches the integrity recorded in policies/.upstream-integrity" >&2
+            exit 1
+        fi
+        integrity="$got"
     fi
-    tar -xzf "$work"/opencode-policy-*.tgz -C "$work/src"
+    tar -xzf "$tgz" -C "$work/src"
 elif [ -d "$source_path" ]; then
     cp -R "$source_path"/. "$work/src/"
 elif [ -f "$source_path" ]; then
@@ -111,8 +132,11 @@ else
     exit 1
 fi
 
-# Locate each file wherever the package keeps it, and validate its shape.
+# Locate each file wherever the package keeps it, and validate its shape. Every
+# file is checked before any is written, so a bad file never leaves the
+# vendored set half updated.
 changed=0
+to_copy=()
 for name in "${FILES[@]}"; do
     found="$(find "$work/src" -name "$name" -type f | head -n 1)"
     if [ -z "$found" ]; then
@@ -150,13 +174,27 @@ for name in "${FILES[@]}"; do
         if (removed.length) console.log("    removed: " + removed.join(", "));
         if (edited.length) console.log("    edited:  " + edited.join(", "));
     ' "$POLICIES_DIR/$name" "$found"
-    if [ "$apply" = true ]; then
-        cp "$found" "$POLICIES_DIR/$name"
-    fi
+    to_copy+=("$found:$name")
 done
+
+# Record which upstream release the vendored files come from, and its
+# integrity, so a later fetch of the same release can be checked against it.
+record_upstream_pins() {
+    [ -n "${resolved:-}" ] || return 0
+    echo "$resolved" >"$POLICIES_DIR/.upstream-version"
+    [ -n "${integrity:-}" ] || return 0
+    {
+        awk -v v="$resolved" '$1 != v' "$POLICIES_DIR/.upstream-integrity" 2>/dev/null || true
+        printf '%s %s\n' "$resolved" "$integrity"
+    } >"$work/integrity"
+    cp "$work/integrity" "$POLICIES_DIR/.upstream-integrity"
+}
 
 if [ "$changed" -eq 0 ]; then
     echo "Policies are up to date."
+    if [ "$apply" = true ]; then
+        record_upstream_pins
+    fi
     exit 0
 fi
 
@@ -166,11 +204,12 @@ if [ "$apply" != true ]; then
     exit 0
 fi
 
+for entry in "${to_copy[@]}"; do
+    cp "${entry%:*}" "$POLICIES_DIR/${entry##*:}"
+done
 current="$(tr -d '[:space:]' <"$POLICIES_DIR/VERSION")"
 echo "$((current + 1))" >"$POLICIES_DIR/VERSION"
-if [ -n "${resolved:-}" ]; then
-    echo "$resolved" >"$POLICIES_DIR/.upstream-version"
-fi
+record_upstream_pins
 echo
 echo "Applied. policies/VERSION: $current -> $((current + 1))"
 

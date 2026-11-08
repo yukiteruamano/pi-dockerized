@@ -1,12 +1,17 @@
 name: Publish image
 
-# Builds the image in CI, smoke-tests it, pushes a multi-arch copy to GHCR with
-# provenance and an SBOM, and signs it keyless with cosign. `pi-dockerized pull`
-# verifies that signature before it will use the image.
+# Builds the multi-arch image in CI and pushes it by digest only (no tag yet),
+# with provenance and an SBOM. That exact digest is smoke-tested on every
+# platform (arm64 under QEMU), signed keyless with cosign, and only then tagged.
+# `pi-dockerized pull` verifies the signature against this workflow on a
+# version tag before it will use the image.
 #
-# Runs on version tags (v*) and by hand. The published image is built with
-# INSTALL_DOCKER_CLI=false (the safe default); enable setting.docker_socket and
-# run `pi-dockerized build` locally if you need the Docker CLI inside.
+# Release tags (`vX.Y.Z` and `latest`) are only ever applied by a run on a
+# `vX.Y.Z` git tag that matches WRAPPER_VERSION. Any other run (a manual run on a
+# branch, a pre-release tag) publishes `dev-<sha>` only, which `pull` does not
+# trust. The published image is built with INSTALL_DOCKER_CLI=false (the safe
+# default); enable setting.docker_socket and run `pi-dockerized build` locally if
+# you need the Docker CLI inside.
 
 on:
   push:
@@ -21,7 +26,7 @@ env:
 
 jobs:
   publish:
-    name: Build, test, push, sign
+    name: Build, push, test, sign, tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,52 +35,34 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Resolve the version
+      - name: Resolve the version and tags
         id: meta
         env:
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
         run: |
-          # v1.2.3 -> 1.2.3 for the label; manual runs use the wrapper's own version.
-          if [[ "$REF_NAME" == v* ]]; then
+          wrapper="$(grep -oE '^WRAPPER_VERSION="[^"]+"' bin/pi-dockerized | cut -d'"' -f2)"
+          if [ "$REF_TYPE" = tag ] && [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             version="${REF_NAME#v}"
+            if [ "$version" != "$wrapper" ]; then
+              echo "::error::Tag $REF_NAME does not match WRAPPER_VERSION $wrapper in bin/pi-dockerized."
+              exit 1
+            fi
+            tags="${IMAGE}:v${version} ${IMAGE}:latest"
           else
-            version="$(grep -oE '^WRAPPER_VERSION="[^"]+"' bin/pi-dockerized | cut -d'"' -f2)"
+            # Not a release: never move vX.Y.Z or latest.
+            version="$wrapper"
+            tags="${IMAGE}:dev-${SHA:0:12}"
           fi
-          echo "version=$version" >>"$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "tags=$tags"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >>"$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      # Smoke test on one architecture before anything is published: Pi reports a
-      # real version and the guard passes its own self-test.
-      - name: Build (amd64) for the smoke test
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          load: true
-          tags: pi-dockerized:smoke
-          build-args: |
-            WRAPPER_VERSION=${{ steps.meta.outputs.version }}
-            VCS_REF=${{ github.sha }}
-            INSTALL_DOCKER_CLI=false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Smoke test
-        run: |
-          docker run --rm --entrypoint bash pi-dockerized:smoke -c '
-            v=$(pi --version 2>&1 | tail -n 1)
-            test -n "$v" && test "$v" != "0.0.0"
-            node /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs
-            test -x /usr/local/lib/pi-dockerized/doctor.sh
-            test -x /usr/local/lib/pi-dockerized/ext-install.sh
-            # Official Pi reads a seeded ext-agent dir; the seed keeps the sandbox keys.
-            d=$(mktemp -d)
-            node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d"
-            node /usr/local/lib/pi-dockerized/ext-agent.mjs check "$d/settings.json"
-            PI_CODING_AGENT_DIR="$d" pi list
-            echo "pi $v"
-          '
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -83,29 +70,78 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (multi-arch)
+      # Pushed untagged: nothing can pull it by a tag before it is tested and
+      # signed. The `created` label drives the wrapper's stale-image warning.
+      - name: Build and push by digest (multi-arch)
         id: push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
           provenance: mode=max
           sbom: true
-          tags: |
-            ${{ env.IMAGE }}:v${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE }}:latest
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
           build-args: |
             WRAPPER_VERSION=${{ steps.meta.outputs.version }}
             VCS_REF=${{ github.sha }}
             INSTALL_DOCKER_CLI=false
           cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The same smoke test `pi-dockerized build`/`pull` run (Pi version, guard
+      # self-test, guard lock for uid 1000 and another uid, ext-agent seed),
+      # against the pushed digest, once per platform.
+      - name: Smoke-test the pushed digest on every platform
+        shell: bash
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          ref="${IMAGE}@${DIGEST}"
+          IMAGE_NAME=pi-dockerized:latest
+          export HOME="$RUNNER_TEMP/smoke-home"
+          mkdir -p "$HOME"
+          # shellcheck source=/dev/null
+          source lib/config-lib.sh
+          # shellcheck source=/dev/null
+          source lib/cmd/image.sh
+          for platform in linux/amd64 linux/arm64; do
+            echo "== $platform"
+            export DOCKER_DEFAULT_PLATFORM="$platform"
+            docker pull "$ref"
+            smoke_test_image "$ref"
+            docker rmi "$ref" >/dev/null
+          done
 
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
-      # Sign the digest, not the tag: the signature stays valid for exactly the
-      # bytes that were built, however the tag moves later.
+      # Sign the digest, not a tag: the signature stays valid for exactly the
+      # bytes that were built and tested, however a tag moves later.
       - name: Sign
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Tags last, so a tag never points at an untested or unsigned image; each
+      # must resolve to the signed digest.
+      - name: Tag
+        shell: bash
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          read -r -a tags <<<"$TAGS"
+          args=()
+          for t in "${tags[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          for t in "${tags[@]}"; do
+            got="$(docker buildx imagetools inspect "$t" --format '{{json .Manifest}}' | jq -r .digest)"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$t resolves to $got, not the signed digest $DIGEST."
+              exit 1
+            fi
+            echo "$t -> $got"
+          done

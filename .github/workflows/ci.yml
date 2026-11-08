@@ -98,7 +98,9 @@ jobs:
 
   guard-version:
     name: Guard version bump
-    if: github.event_name == 'pull_request'
+    # Pull requests compare against their base; pushes to master against the
+    # commit before the push, so a direct push cannot skip the check.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -106,24 +108,40 @@ jobs:
           fetch-depth: 0
 
       # Changing the guard or the pattern sets changes behavior, which must be
-      # visible in `pi-dockerized version`: GUARD_VERSION has to move with it.
-      - name: GUARD_VERSION changed with the guard
+      # visible in `pi-dockerized version`: GUARD_VERSION has to go up with it.
+      - name: GUARD_VERSION increased with the guard
         env:
+          EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
-          base="origin/${BASE_REF}"
-          changed="$(git diff --name-only "$base"...HEAD -- extensions/pi-security-guard policies \
-            | grep -v -E '(^|/)(README\.md|LICENSE[^/]*)$' || true)"
+          if [ "$EVENT" = pull_request ]; then
+            base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          elif [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          else
+            base="$(git rev-parse HEAD~1)"
+          fi
+          changed="$(git diff --name-only "$base" HEAD -- extensions/pi-security-guard policies \
+            | grep -v -E '(^|/)(README\.md|LICENSE[^/]*|\.upstream-[a-z]+)$' || true)"
           if [ -z "$changed" ]; then
             echo "Guard and policies untouched."
             exit 0
           fi
           echo "Guard/policy files changed:"
           echo "$changed"
-          if git diff "$base"...HEAD -- extensions/pi-security-guard/policy.mjs \
-            | grep -qE '^[+-]export const GUARD_VERSION'; then
-            echo "GUARD_VERSION was bumped."
-          else
-            echo "::error::The guard or policies changed but GUARD_VERSION in extensions/pi-security-guard/policy.mjs was not bumped."
+          guard_version() {
+            git show "$1:extensions/pi-security-guard/policy.mjs" 2>/dev/null \
+              | sed -n 's/^export const GUARD_VERSION = \([0-9][0-9]*\);.*/\1/p' | head -n 1
+          }
+          old="$(guard_version "$base")"
+          new="$(guard_version HEAD)"
+          if [ -z "$new" ]; then
+            echo "::error::Cannot read GUARD_VERSION from extensions/pi-security-guard/policy.mjs."
             exit 1
           fi
+          if [ -n "$old" ] && [ "$new" -le "$old" ]; then
+            echo "::error::The guard or policies changed but GUARD_VERSION went from $old to $new; it must increase."
+            exit 1
+          fi
+          echo "GUARD_VERSION ${old:-none} -> $new."

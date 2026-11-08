@@ -1,6 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
   "dockerfile": {
     "pinDigests": true
   },
@@ -8,7 +11,9 @@
     {
       "description": "Dockerfile ARGs annotated with a `# renovate:` comment",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\nARG [A-Z_]+_VERSION=(?<currentValue>[^\\s]+)"
       ]
@@ -16,8 +21,19 @@
   ],
   "packageRules": [
     {
+      "description": "Let new npm/PyPI releases age before proposing them: the image build refuses packages younger than PNPM_CONFIG_MINIMUM_RELEASE_AGE (1 day), and a hijacked release is usually caught within days",
+      "matchDatasources": [
+        "npm",
+        "pypi"
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
       "description": "Policy and guard changes need a GUARD_VERSION bump; keep them out of automated grouping",
-      "matchFileNames": ["policies/**", "extensions/**"],
+      "matchFileNames": [
+        "policies/**",
+        "extensions/**"
+      ],
       "enabled": false
     }
   ]
