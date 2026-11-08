@@ -87,12 +87,13 @@ assert_eq "$(stat -c '%a' "$AGENT/auth.json")" "600" "auth.json must be private"
 assert_eq "$(normalize_path '/a/../b//c/.')" "/b/c" "normalize_path resolves . .. and //"
 assert_eq "$(normalize_path '/../..')" "/" "normalize_path stops at the root"
 validate_container_path /proj "x" >/dev/null 2>&1 || fail "/proj is a fine container path"
-validate_container_path /etc/ssl/certs/ca.pem "x" internal >/dev/null 2>&1 || fail "mounting a file under /etc must be allowed"
+validate_container_path /etc/ssl/certs/ca.pem "x" >/dev/null 2>&1 || fail "mounting a CA certificate under /etc/ssl/certs must be allowed"
+validate_container_path /usr/local/share/ca-certificates/corp.crt "x" >/dev/null 2>&1 || fail "mounting an extra CA certificate must be allowed"
 for bad in / /etc /usr /usr/local /usr/local/bin /home /home/coder /home/coder/.pi /home/coder/.pi/agent /bin; do
     validate_container_path "$bad" "x" >/dev/null 2>&1 && fail "container path $bad would hide system paths"
 done
 for bad in /home/coder/.pi/agent/extensions/x /home/coder/.pi/agent/allow.json /usr/local/bin/evil /home/coder/.nvm/x; do
-    validate_container_path "$bad" "x" internal >/dev/null 2>&1 && fail "custom mount target $bad must be refused"
+    validate_container_path "$bad" "x" >/dev/null 2>&1 && fail "custom mount target $bad must be refused"
 done
 
 # A project whose $HOME-stripped path lands on a system dir is refused.
@@ -313,12 +314,23 @@ cat >"$FAKE_BIN/docker" <<'EOF'
 #!/bin/bash
 echo "$*" >>"$FAKE_DOCKER_LOG"
 case "$1" in
-run) [ "${FAKE_RUN_FAIL:-}" = 1 ] && { echo "boom" >&2; exit 1; } ;;
+run)
+    [ "${FAKE_RUN_FAIL:-}" = 1 ] && { echo "boom" >&2; exit 1; }
+    case "$*" in
+    *ghcr.io*selftest.mjs*--version*) echo "${FAKE_PULLED_GUARD:-${FAKE_GUARD_VERSION:-}}" ;;
+    *selftest.mjs*--version*) echo "${FAKE_GUARD_VERSION:-}" ;;
+    esac
+    ;;
 ps) printf '%s\n' ${FAKE_PS_NAMES:-} ;;
 image)
     if [ "$2" = inspect ]; then
         case "$*" in
-        *:previous*) [ "${FAKE_NO_PREVIOUS:-}" = 1 ] && exit 1 ;;
+        *:previous*)
+            [ "${FAKE_NO_PREVIOUS:-}" = 1 ] && exit 1
+            case "$*" in *.Id*) echo "${FAKE_PREVIOUS_ID:-${FAKE_IMAGE_ID:-}}" ;; esac
+            ;;
+        *.Id*) echo "${FAKE_IMAGE_ID:-}" ;;
+        *org.opencontainers.image.version*ghcr.io*) echo "${FAKE_PULLED_VERSION:-${FAKE_IMAGE_VERSION:-}}" ;;
         *org.opencontainers.image.version*) echo "${FAKE_IMAGE_VERSION:-}" ;;
         *pi-dockerized.docker-cli*) echo "${FAKE_DOCKER_CLI:-}" ;;
         esac
@@ -465,8 +477,103 @@ rm -f "$AGENT/sessions/sess-1.json"
 out="$(PATH="$FAKE_BIN:/usr/bin:/bin" "$BIN" pull 2>&1)" && fail "pull without cosign must fail"
 assert_contains "$out" "cosign is required" "pull explains why it refused"
 : >"$FAKE_DOCKER_LOG"
-bin pull v0.16.0 --no-verify >/dev/null 2>&1 || fail "pull --no-verify"
+FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=999 bin pull v0.16.0 --no-verify >/dev/null 2>&1 || fail "pull --no-verify"
 assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pull ghcr.io/yukiteruamano/pi-dockerized:v0.16.0" "pull fetches the requested tag"
+
+# --- Image lifecycle: lock smoke test, downgrade refusal, previous/rollback ----------
+# The smoke test also checks the guard lock for a uid other than the image's.
+: >"$FAKE_DOCKER_LOG"
+bin build >/dev/null 2>&1 || fail "build must succeed with a healthy image"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "--user 4242:4242 --group-add coder --entrypoint /usr/local/lib/pi-dockerized/lock-check.sh" \
+    "the smoke test checks the guard lock for another uid"
+# pull: an image older than this checkout's guard or wrapper is refused.
+: >"$FAKE_DOCKER_LOG"
+out="$(FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=1 bin pull v0.16.0 --no-verify 2>&1)" &&
+    fail "pull must refuse an image with an older guard"
+assert_contains "$out" "older than guard" "pull names the guard downgrade"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "rmi ghcr.io/yukiteruamano/pi-dockerized:v0.16.0" "a refused downgrade is discarded"
+assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v0.16.0 pi-dockerized:latest" "a refused downgrade is not promoted"
+out="$(FAKE_PULLED_VERSION=0.1.0 FAKE_PULLED_GUARD=999 bin pull v0.1.0 --no-verify 2>&1)" &&
+    fail "pull must refuse an older wrapper release"
+assert_contains "$out" "older than" "pull names the release downgrade"
+out="$(FAKE_IMAGE_VERSION=9.9.9 FAKE_PULLED_VERSION=1.0.0 FAKE_PULLED_GUARD=999 bin pull v1.0.0 --no-verify 2>&1)" &&
+    fail "pull must refuse a release older than the current image"
+out="$(FAKE_PULLED_VERSION='' FAKE_PULLED_GUARD=999 bin pull v0.16.0 --no-verify 2>&1)" &&
+    fail "pull must refuse an image without a version label"
+: >"$FAKE_DOCKER_LOG"
+FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=1 bin pull v0.16.0 --no-verify --allow-downgrade >/dev/null 2>&1 ||
+    fail "pull --allow-downgrade must accept an older image"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v0.16.0 pi-dockerized:latest" "an allowed downgrade is promoted"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pi-dockerized:0.16.0-guard1" "the version tag names the pulled image's own guard"
+# Pull verification only trusts the publish workflow on a version tag.
+grep -q 'image\\.yml@refs/tags/v' "$REPO_DIR/lib/cmd/image.sh" || fail "cosign identity must be pinned to image.yml on a version tag"
+# Promoting the image already in use keeps the real previous image.
+: >"$FAKE_DOCKER_LOG"
+FAKE_IMAGE_ID=sha256:same bin build >/dev/null 2>&1 || fail "a no-op rebuild must succeed"
+assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "tag pi-dockerized:latest pi-dockerized:previous" \
+    "re-promoting the same image must not overwrite :previous"
+# rollback swaps latest and previous, so a second rollback undoes the first.
+: >"$FAKE_DOCKER_LOG"
+FAKE_IMAGE_ID=sha256:new FAKE_PREVIOUS_ID=sha256:old bin rollback >/dev/null 2>&1 || fail "rollback with distinct images"
+log="$(cat "$FAKE_DOCKER_LOG")"
+assert_contains "$log" "tag pi-dockerized:previous pi-dockerized:latest" "rollback re-tags previous as latest"
+assert_contains "$log" "tag sha256:new pi-dockerized:previous" "rollback keeps the replaced image as previous"
+: >"$FAKE_DOCKER_LOG"
+FAKE_IMAGE_ID=sha256:same bin rollback >/dev/null 2>&1 || fail "rollback onto the same image is a no-op"
+assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "tag " "rollback onto the same image re-tags nothing"
+
+# --- Self-update: merge the verified commit, pinned release signers ------------------
+UPD="$TMP/upd"
+mkdir -p "$UPD"
+gitq() { git -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+gitq init --bare -b master "$UPD/upstream.git"
+gitq clone "$UPD/upstream.git" "$UPD/pusher"
+(cd "$UPD/pusher" && echo 1 >f && gitq add f && gitq commit -m one && gitq push origin HEAD:master)
+gitq clone "$UPD/upstream.git" "$UPD/checkout"
+(cd "$UPD/pusher" && echo 2 >f && gitq commit -am two && gitq push origin HEAD:master)
+rev_two="$(git -C "$UPD/pusher" rev-parse HEAD)"
+out="$(
+    # shellcheck source=/dev/null
+    source "$REPO_DIR/lib/cmd/update.sh"
+    REPO_ROOT="$UPD/checkout"
+    # Upstream moves again right after the fetch: only the commit that was
+    # fetched (and shown, and verified) may be merged.
+    git() {
+        command git "$@"
+        local rc=$?
+        if [ "${3:-}" = fetch ]; then
+            (cd "$UPD/pusher" && echo 3 >f && gitq commit -am three && gitq push origin HEAD:master)
+        fi
+        return "$rc"
+    }
+    _git_pull_wrapper true false false 2>&1
+)" || fail "self-update must fast-forward a clean checkout: $out"
+assert_eq "$(git -C "$UPD/checkout" rev-parse HEAD)" "$rev_two" "self-update merges the fetched commit, not a newer one"
+signers_case() {
+    (
+        # shellcheck source=/dev/null
+        source "$REPO_DIR/lib/cmd/update.sh"
+        git() {
+            case "$*" in
+            *verify-commit*) return 0 ;;
+            *%GF*) echo "SIGNINGKEY" ;;
+            *%GP*) echo "PRIMARYKEY" ;;
+            esac
+        }
+        verify_upstream_signature "$UPD/checkout" HEAD 2>&1
+    )
+}
+mkdir -p "$UPD/checkout/.github"
+rm -f "$UPD/checkout/.github/release-signers"
+out="$(signers_case)" || fail "without a signer list any trusted signature passes"
+assert_contains "$out" "any key your git trusts" "verification warns when no signer list is pinned"
+printf '%s\n' '# release keys' 'OTHERKEY' >"$UPD/checkout/.github/release-signers"
+out="$(signers_case)" && fail "a signature from a key outside release-signers must be refused"
+assert_contains "$out" "not in .github/release-signers" "the refusal names the signer list"
+printf '%s\n' 'OTHERKEY' ' PRIMARYKEY  # maintainer' >"$UPD/checkout/.github/release-signers"
+signers_case >/dev/null || fail "a subkey of a listed primary key must pass"
+printf '%s\n' 'SIGNINGKEY' >"$UPD/checkout/.github/release-signers"
+signers_case >/dev/null || fail "a listed signing key must pass"
 
 # --- Pi Packages (extensions) -----------------------------------------------------------------------------
 [ -d "$EXT_AGENT_DIR" ] || fail "the ext-agent directory must be created"
@@ -511,8 +618,8 @@ if command -v node >/dev/null 2>&1; then
 fi
 printf '{"packages":["npm:x"]}\n' >"$EXT_AGENT_DIR/settings.json"
 
-validate_container_path /home/coder/.pi/agent/npm/x "x" internal >/dev/null 2>&1 && fail "a custom mount inside the agent dir must be refused"
-validate_container_path /home/coder/.pi/ext-agent/x "x" internal >/dev/null 2>&1 && fail "a custom mount inside ext-agent must be refused"
+validate_container_path /home/coder/.pi/agent/npm/x "x" >/dev/null 2>&1 && fail "a custom mount inside the agent dir must be refused"
+validate_container_path /home/coder/.pi/ext-agent/x "x" >/dev/null 2>&1 && fail "a custom mount inside ext-agent must be refused"
 
 # Package sources: what `pi install` takes, nothing that could be an option or a local path.
 for ok in "npm:@scope/pkg@1.2.3" "npm:pkg" "git:github.com/o/r@v1.0.0" "https://github.com/o/r"; do
@@ -613,7 +720,7 @@ assert_contains "$(cat "$RC")" 'alias ll="ls -l"' "uninstall keeps the user's ow
 [ -d "$CONFIG_DIR" ] || fail "uninstall must keep the config by default"
 out="$(bin uninstall 2>&1)"
 assert_contains "$out" "Nothing to remove" "uninstall is idempotent"
-PURGE_DIR="$HOME/.config/purge-test"
+PURGE_DIR="$HOME/.config/purge-test/pi-dockerized"
 mkdir -p "$PURGE_DIR"
 CONFIG_DIR="$PURGE_DIR" bin uninstall --purge-config --yes >/dev/null 2>&1 || fail "uninstall --purge-config"
 [ ! -d "$PURGE_DIR" ] || fail "--purge-config must delete the config dir"
@@ -622,5 +729,20 @@ OUTSIDE="$TMP/not-in-home"
 mkdir -p "$OUTSIDE"
 CONFIG_DIR="$OUTSIDE" bin uninstall --purge-config --yes >/dev/null 2>&1
 [ -d "$OUTSIDE" ] || fail "--purge-config must refuse directories outside the home"
+# Never another app's directory or ~/.config itself.
+mkdir -p "$HOME/.config/other-app"
+CONFIG_DIR="$HOME/.config" bin uninstall --purge-config --yes >/dev/null 2>&1
+CONFIG_DIR="$HOME/.config/other-app" bin uninstall --purge-config --yes >/dev/null 2>&1
+[ -d "$HOME/.config/other-app" ] || fail "--purge-config must refuse ~/.config and non pi-dockerized dirs"
+# The default profile's purge keeps the named profiles unless --all-profiles.
+PURGE_DIR="$HOME/.config/purge-test/pi-dockerized"
+mkdir -p "$PURGE_DIR/profiles/work"
+: >"$PURGE_DIR/config"
+CONFIG_DIR="$PURGE_DIR" bin uninstall --purge-config --yes >/dev/null 2>&1 || fail "purge with profiles"
+[ -d "$PURGE_DIR/profiles/work" ] || fail "--purge-config must keep named profiles"
+[ ! -e "$PURGE_DIR/config" ] || fail "--purge-config must delete the default profile's files"
+CONFIG_DIR="$PURGE_DIR" bin uninstall --purge-config --all-profiles --yes >/dev/null 2>&1 || fail "purge --all-profiles"
+[ ! -d "$PURGE_DIR" ] || fail "--all-profiles must delete the named profiles too"
+bin uninstall --all-profiles >/dev/null 2>&1 && fail "--all-profiles needs --purge-config"
 
 echo "All wrapper-commands tests passed."

@@ -13,6 +13,42 @@
 # changes, and with --verify (or setting.verify_updates=true) the upstream head
 # must carry a valid signature.
 
+# Fingerprints allowed to sign upstream heads, one per line (`#` comments). The
+# list is read from the checkout as it is BEFORE the update, so an update cannot
+# vouch for itself.
+RELEASE_SIGNERS_FILE=".github/release-signers"
+
+# Require a valid signature on <rev>. When the checkout ships a release-signers
+# list, the signing key (or its primary key) must be on it; otherwise any key
+# git trusts (GPG keyring, SSH allowed signers) is accepted, with a warning.
+# Usage: verify_upstream_signature <repo> <rev>
+verify_upstream_signature() {
+    local repo="$1" rev="$2" signers="$1/$RELEASE_SIGNERS_FILE" fpr primary allowed
+    if ! git -C "$repo" verify-commit "$rev" >/dev/null 2>&1; then
+        print_error "The upstream head ${rev:0:12} has no valid signature; refusing to pull."
+        print_info "Import the maintainer's key, or turn off setting.verify_updates / --verify."
+        return 1
+    fi
+    if [ ! -f "$signers" ]; then
+        print_warning "No $RELEASE_SIGNERS_FILE in this checkout: any key your git trusts is accepted."
+        print_success "Upstream head signature verified."
+        return 0
+    fi
+    fpr=$(git -C "$repo" log -1 --format=%GF "$rev" 2>/dev/null | tr -d '[:space:]')
+    primary=$(git -C "$repo" log -1 --format=%GP "$rev" 2>/dev/null | tr -d '[:space:]')
+    while IFS= read -r allowed || [ -n "$allowed" ]; do
+        allowed="${allowed%%#*}"
+        allowed="${allowed//[[:space:]]/}"
+        [ -n "$allowed" ] || continue
+        if [ "$allowed" = "$fpr" ] || { [ -n "$primary" ] && [ "$allowed" = "$primary" ]; }; then
+            print_success "Upstream head signed by a release signer (${fpr:-$primary})."
+            return 0
+        fi
+    done <"$signers"
+    print_error "The upstream head ${rev:0:12} is signed by ${fpr:-an unknown key}, which is not in $RELEASE_SIGNERS_FILE; refusing to pull."
+    return 1
+}
+
 # Fetch upstream and, when the checkout is behind, show what would change.
 # Returns 0 after pulling, 1 on error/abort/pending-check, 2 when up to date.
 # Usage: _git_pull_wrapper <yes:true|false> <check_only:true|false> <verify:true|false>
@@ -57,12 +93,7 @@ _git_pull_wrapper() {
         return 1
     fi
     if [ "$verify" = true ]; then
-        if ! git -C "$REPO_ROOT" verify-commit "$remote_rev" >/dev/null 2>&1; then
-            print_error "The upstream head ${remote_rev:0:12} has no valid signature; refusing to pull."
-            print_info "Import the maintainer's key, or turn off setting.verify_updates / --verify."
-            return 1
-        fi
-        print_success "Upstream head signature verified."
+        verify_upstream_signature "$REPO_ROOT" "$remote_rev" || return 1
     fi
     if [ "$yes" != true ] && [ -t 0 ]; then
         local ans
@@ -75,7 +106,9 @@ _git_pull_wrapper() {
             ;;
         esac
     fi
-    git -C "$REPO_ROOT" pull --ff-only || {
+    # Merge exactly the commit that was shown (and verified), never whatever
+    # upstream points at by now: a second fetch could bring unverified commits.
+    git -C "$REPO_ROOT" merge --ff-only --quiet "$remote_rev" || {
         print_error "Pull failed."
         return 1
     }
@@ -219,7 +252,11 @@ full_upgrade() {
     fi
     local -a build_args=(--bust-cache)
     [ -n "$_UP_PI_VERSION" ] && build_args+=(--pi-version "$_UP_PI_VERSION")
-    if ! build_image "${build_args[@]}"; then
+    # Build with the wrapper that was just pulled, not the copy of the old one
+    # running here: its WRAPPER_VERSION, build code and smoke test are the ones
+    # that match the new Dockerfile. The profile travels in the environment
+    # (PI_DOCKERIZED_PROFILE is exported by bin/pi-dockerized).
+    if ! "$REPO_ROOT/bin/pi-dockerized" build "${build_args[@]}"; then
         rollback_code_after_failed_build "$prev_rev" || true
         return 1
     fi

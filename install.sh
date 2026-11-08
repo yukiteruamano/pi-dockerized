@@ -8,10 +8,16 @@
 #   curl -fsSL https://raw.githubusercontent.com/yukiteruamano/pi-dockerized/master/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --yes --only config,completions,aliases,global
 # Override the source with PI_REPO_URL, the target with PI_INSTALL_DIR.
+# PI_DOCKERIZED_VERIFY=1 requires a valid signature on the code it installs
+# (and, when updating a checkout, one from .github/release-signers if present).
 set -e
 
 REPO_URL="${PI_REPO_URL:-https://github.com/yukiteruamano/pi-dockerized.git}"
 INSTALL_DIR="${PI_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-dockerized}"
+VERIFY=false
+case "${PI_DOCKERIZED_VERIFY:-}" in
+1 | true | yes) VERIFY=true ;;
+esac
 
 # Forwarded install args. A piped `curl | bash` has no TTY for prompts, so
 # default to --yes (full setup) unless the caller already passed --yes or
@@ -54,6 +60,12 @@ if [ ! -d "$INSTALL_DIR" ]; then
     fi
     echo "Cloning pi-dockerized into $INSTALL_DIR ..."
     git clone "$REPO_URL" "$INSTALL_DIR"
+    # A fresh clone has no earlier signer list to check against: require at
+    # least a signature from a key this machine's git already trusts.
+    if [ "$VERIFY" = true ] && ! git -C "$INSTALL_DIR" verify-commit HEAD >/dev/null 2>&1; then
+        echo "error: the cloned head has no valid signature (PI_DOCKERIZED_VERIFY=1); not installing. Inspect $INSTALL_DIR." >&2
+        exit 1
+    fi
 elif command -v git >/dev/null 2>&1; then
     # Reused checkout. Manual checkouts (init + remote add) lack an upstream
     # branch, which breaks `update`/`upgrade` and the fast-forward below: fix
@@ -69,7 +81,18 @@ elif command -v git >/dev/null 2>&1; then
         _rr=$(git -C "$INSTALL_DIR" rev-parse '@{u}' 2>/dev/null || true)
         _base=$(git -C "$INSTALL_DIR" merge-base HEAD '@{u}' 2>/dev/null || true)
         if [ -n "$_lr" ] && [ -n "$_rr" ] && [ "$_lr" != "$_rr" ] && [ "$_lr" = "$_base" ]; then
-            git -C "$INSTALL_DIR" pull --ff-only >/dev/null 2>&1 || echo "warning: could not pull latest changes in $INSTALL_DIR" >&2
+            # Same check as `update --verify`, against the signer list of the
+            # checkout as it is now (before the fast-forward).
+            if [ "$VERIFY" = true ] && ! (
+                # shellcheck source=/dev/null
+                source "$INSTALL_DIR/lib/config-lib.sh" && source "$INSTALL_DIR/lib/cmd/update.sh" &&
+                    verify_upstream_signature "$INSTALL_DIR" "$_rr"
+            ); then
+                echo "error: not updating $INSTALL_DIR (PI_DOCKERIZED_VERIFY=1)" >&2
+                exit 1
+            fi
+            # Merge the commit that was fetched (and verified), not a new fetch.
+            git -C "$INSTALL_DIR" merge --ff-only --quiet "$_rr" >/dev/null 2>&1 || echo "warning: could not pull latest changes in $INSTALL_DIR" >&2
         fi
         unset _lr _rr _base
     fi

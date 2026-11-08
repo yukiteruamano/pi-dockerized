@@ -54,6 +54,9 @@ SMOKE_SCRIPT='
 v=$(pi --version 2>&1 | tail -n 1)
 if [ -z "$v" ] || [ "$v" = "0.0.0" ]; then echo "pi reports version [$v]"; exit 1; fi
 node /home/coder/.pi/agent/extensions/pi-security-guard/selftest.mjs || exit 1
+# The guard must be root-owned and out of reach of the image user (uid 1000,
+# the usual host uid); smoke_test_image repeats this for another uid.
+/usr/local/lib/pi-dockerized/lock-check.sh || { echo "the security guard is not locked"; exit 1; }
 test -x /usr/local/lib/pi-dockerized/doctor.sh || { echo "doctor.sh is missing"; exit 1; }
 test -x /usr/local/lib/pi-dockerized/ext-install.sh && test -f /usr/local/lib/pi-dockerized/ext-agent.mjs || { echo "ext-install.sh/ext-agent.mjs missing"; exit 1; }
 # The official Pi must read a seeded ext-agent directory, and the seed must keep
@@ -80,15 +83,88 @@ smoke_test_image() {
         printf '%s\n' "$out" >&2
         return 1
     fi
+    # Sessions run as the host uid, which is not always the image's 1000: the
+    # guard must also be locked for any other uid in the coder group.
+    local lock_out
+    if ! lock_out=$(docker run --rm --user 4242:4242 --group-add coder \
+        --entrypoint /usr/local/lib/pi-dockerized/lock-check.sh "$image" 2>&1); then
+        print_error "Smoke test failed for $image (uid 4242):"
+        printf '%s\n' "$lock_out" >&2
+        return 1
+    fi
     print_success "Smoke test passed (pi $(printf '%s' "$out" | tail -n 1))"
+}
+
+# Guard version baked into an image ("" when it cannot be read).
+# Usage: image_guard_version <image>
+image_guard_version() {
+    docker run --rm --entrypoint node "$1" "$GUARD_DIR_IN_IMAGE/selftest.mjs" --version 2>/dev/null |
+        tail -n 1 | tr -cd '0-9'
+}
+
+# Guard version of this checkout (GUARD_VERSION in policy.mjs; "" if unreadable).
+checkout_guard_version() {
+    sed -n 's/^export const GUARD_VERSION = \([0-9][0-9]*\);.*/\1/p' \
+        "$REPO_ROOT/extensions/pi-security-guard/policy.mjs" 2>/dev/null | head -n 1
+}
+
+# Image ID of a local image ("" when missing).
+# Usage: image_id <image>
+image_id() {
+    docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true
+}
+
+# True when version $1 is strictly lower than $2 (x.y.z, `sort -V` order).
+# Usage: version_lt <a> <b>
+version_lt() {
+    [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]
+}
+
+# Refuse an image older than what is in use: its wrapper version below the
+# current image's or this checkout's, or its guard below theirs. A pulled tag
+# can be any old signed release, and promoting it would silently bring back a
+# weaker guard and older policies.
+# Usage: check_not_downgrade <image>
+check_not_downgrade() {
+    local image="$1" new_ver new_guard cur_ver cur_guard floor_ver floor_guard
+    new_ver=$(image_label "$image" org.opencontainers.image.version)
+    new_guard=$(image_guard_version "$image")
+    if ! [[ "$new_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [ -z "$new_guard" ]; then
+        print_error "Cannot tell the version of $image (wrapper '${new_ver:-?}', guard '${new_guard:-?}')."
+        return 1
+    fi
+    floor_ver="$WRAPPER_VERSION"
+    floor_guard=$(checkout_guard_version)
+    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        cur_ver=$(image_label "$IMAGE_NAME" org.opencontainers.image.version)
+        cur_guard=$(image_guard_version "$IMAGE_NAME")
+        if [[ "$cur_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && version_lt "$floor_ver" "$cur_ver"; then
+            floor_ver="$cur_ver"
+        fi
+        if [ -n "$cur_guard" ] && { [ -z "$floor_guard" ] || [ "$cur_guard" -gt "$floor_guard" ]; }; then
+            floor_guard="$cur_guard"
+        fi
+    fi
+    if version_lt "$new_ver" "$floor_ver"; then
+        print_error "$image is wrapper $new_ver, older than $floor_ver (current image / this checkout)."
+        return 1
+    fi
+    if [ -n "$floor_guard" ] && [ "$new_guard" -lt "$floor_guard" ]; then
+        print_error "$image carries guard $new_guard, older than guard $floor_guard (current image / this checkout)."
+        return 1
+    fi
+    return 0
 }
 
 # Tag identifying this build: <wrapper version>-guard<guard version>.
 # Usage: image_version_tag <image>
 image_version_tag() {
-    local guard
-    guard=$(docker run --rm --entrypoint node "$1" "$GUARD_DIR_IN_IMAGE/selftest.mjs" --version 2>/dev/null | tail -n 1)
-    printf '%s-guard%s' "$WRAPPER_VERSION" "${guard:-0}"
+    local guard version
+    guard=$(image_guard_version "$1")
+    # A pulled image carries its own release; a local build is this wrapper's.
+    version=$(image_label "$1" org.opencontainers.image.version)
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || version="$WRAPPER_VERSION"
+    printf '%s-guard%s' "$version" "${guard:-0}"
 }
 
 # Best-effort local SBOM for the promoted image (CI already publishes one
@@ -109,9 +185,15 @@ write_sbom() {
 # Make a tested image the current one, keeping the one it replaces.
 # Usage: promote_image <tag-or-ref>
 promote_image() {
-    local candidate="$1" vtag
+    local candidate="$1" vtag cur_id new_id
     vtag=$(image_version_tag "$candidate")
-    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    cur_id=$(image_id "$IMAGE_NAME")
+    new_id=$(image_id "$candidate")
+    # Re-promoting the image already in use (same pull twice, a no-op rebuild)
+    # must not overwrite :previous with it, or the real previous image is lost.
+    if [ -n "$cur_id" ] && [ "$cur_id" = "$new_id" ]; then
+        print_info "$IMAGE_NAME is already this image; $IMAGE_REPO:previous left as it was."
+    elif docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         docker tag "$IMAGE_NAME" "$IMAGE_REPO:previous"
     fi
     docker tag "$candidate" "$IMAGE_NAME"
@@ -177,15 +259,23 @@ build_image() {
     promote_image "$candidate"
 }
 
+# Release images are signed by the publish workflow (image.yml) running on a
+# version tag; nothing else in the repository (another workflow, a branch run)
+# may vouch for an image.
+COSIGN_IDENTITY_REGEXP='^https://github\.com/yukiteruamano/pi-dockerized/\.github/workflows/image\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+
 # Fetch the prebuilt image from the registry, verify its signature and promote
 # it. The signature is checked against the digest that was actually pulled, so
-# a tag that moves in between cannot swap the image.
-# Usage: pull_image [TAG] [--no-verify]
+# a tag that moves in between cannot swap the image. An image older than the
+# current one or this checkout (wrapper or guard version) is refused unless
+# --allow-downgrade is given.
+# Usage: pull_image [TAG] [--no-verify] [--allow-downgrade]
 pull_image() {
-    local tag="" verify=true
+    local tag="" verify=true allow_downgrade=false
     while [ $# -gt 0 ]; do
         case "$1" in
         --no-verify) verify=false ;;
+        --allow-downgrade) allow_downgrade=true ;;
         -*)
             print_error "Unknown pull option: $1"
             return 1
@@ -209,7 +299,7 @@ pull_image() {
         local digest_ref
         digest_ref=$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$ref" 2>/dev/null)
         if [ -z "$digest_ref" ] || ! cosign verify \
-            --certificate-identity-regexp '^https://github.com/yukiteruamano/pi-dockerized/\.github/workflows/' \
+            --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$digest_ref" >/dev/null 2>&1; then
             docker rmi "$ref" >/dev/null 2>&1 || true
@@ -225,17 +315,37 @@ pull_image() {
         docker rmi "$ref" >/dev/null 2>&1 || true
         return 1
     fi
+    if ! check_not_downgrade "$ref"; then
+        if [ "$allow_downgrade" != true ]; then
+            docker rmi "$ref" >/dev/null 2>&1 || true
+            print_error "Refusing to downgrade; the image was discarded (pass --allow-downgrade to force it)."
+            print_info "To run this checkout's guard, build the image locally: '$0 build'."
+            return 1
+        fi
+        print_warning "Downgrading the image (--allow-downgrade)."
+    fi
     promote_image "$ref"
 }
 
-# Point `latest` back at the image the last build/pull replaced.
+# Point `latest` back at the image the last build/pull replaced. The image it
+# replaces becomes the new `:previous`, so a second rollback undoes the first.
 rollback_image() {
     if ! docker image inspect "$IMAGE_REPO:previous" >/dev/null 2>&1; then
         print_error "There is no previous image to roll back to."
         return 1
     fi
+    local cur_id prev_id
+    cur_id=$(image_id "$IMAGE_NAME")
+    prev_id=$(image_id "$IMAGE_REPO:previous")
+    if [ -n "$cur_id" ] && [ "$cur_id" = "$prev_id" ]; then
+        print_info "$IMAGE_NAME already is the previous image; nothing to roll back."
+        return 0
+    fi
     docker tag "$IMAGE_REPO:previous" "$IMAGE_NAME"
-    print_success "Rolled back $IMAGE_NAME to the previous image."
+    if [ -n "$cur_id" ]; then
+        docker tag "$cur_id" "$IMAGE_REPO:previous"
+    fi
+    print_success "Rolled back $IMAGE_NAME to the previous image (the replaced one is now $IMAGE_REPO:previous)."
 }
 
 # Remove every local tag of the image (latest, previous, version tags).
