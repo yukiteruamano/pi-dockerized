@@ -64,7 +64,7 @@ add_custom_mount() {
     fi
 
     validate_mount_source "$host_path" "mount.$name" || exit 1
-    validate_container_path "$container_path" "mount.$name" internal || exit 1
+    validate_container_path "$container_path" "mount.$name" || exit 1
 
     if [ ! -e "$host_path" ]; then
         config_warning "Skipping mount.$name: $host_path does not exist"
@@ -225,6 +225,21 @@ build_env_args() {
     DOCKER_ENV_ARGS+=(-e "PI_DOCKERIZED_ENV_FILE=$([ -n "$ENV_FILE" ] && echo yes || echo no)")
 }
 
+# Variables the secrets file must not set: they load code into every process
+# (LD_*, NODE_OPTIONS, BASH_ENV), move the agent's home or tools, or override
+# what the wrapper tells the guard and the entrypoint (PI_DOCKERIZED_*). Docker
+# lets `-e` win over --env-file today, but the file is not the place for them.
+# Usage: env_key_forbidden <KEY>
+env_key_forbidden() {
+    case "$1" in
+    LD_PRELOAD | LD_LIBRARY_PATH | LD_AUDIT | NODE_OPTIONS | NODE_PATH | BASH_ENV | ENV | \
+        PATH | HOME | PI_CODING_AGENT_DIR | PI_DOCKERIZED_* | PI_SKIP_VERSION_CHECK | PI_TELEMETRY)
+        return 0
+        ;;
+    esac
+    return 1
+}
+
 # Build the docker --env-file argument from setting.env_file.
 # The file holds secrets (dotenv KEY=VALUE lines) and is consumed host-side by
 # `docker run --env-file`, so values never appear on the wrapper command line.
@@ -247,8 +262,12 @@ build_env_file_args() {
         env_file="$canonical"
     fi
 
+    # Compare with both spellings of the config dir (a symlinked home resolves
+    # the env file but not $CONFIG_DIR).
+    local config_real
+    config_real=$(canonical_path "$CONFIG_DIR")
     case "$env_file" in
-    "$CONFIG_DIR" | "$CONFIG_DIR"/*) ;;
+    "$CONFIG_DIR" | "$CONFIG_DIR"/* | "$config_real"/*) ;;
     *)
         config_error "Refusing env file outside \$CONFIG_DIR ($CONFIG_DIR): it could be mounted into the container."
         exit 1
@@ -270,7 +289,7 @@ build_env_file_args() {
     # Light format check (never prints values, only line numbers): docker
     # ignores blank lines and `#` comments, needs KEY=VALUE otherwise, does
     # not understand an `export ` prefix, and may choke on CRLF line endings.
-    local line lineno=0 CR
+    local line lineno=0 CR key
     CR=$(printf '\r')
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
@@ -292,6 +311,15 @@ build_env_file_args() {
             config_warning "env file line $lineno uses an 'export ' prefix, which docker does not strip"
             ;;
         esac
+        key="${line%%=*}"
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key#export[[:space:]]}"
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        if env_key_forbidden "$key"; then
+            config_error "env file line $lineno sets $key, which controls the sandbox or the runtime; remove it."
+            exit "$E_CONFIG"
+        fi
     done <"$env_file"
 
     # shellcheck disable=SC2034 # populated here, consumed by bin/pi-dockerized and tests

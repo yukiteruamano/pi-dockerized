@@ -25,11 +25,11 @@ Commands:
     ps [--json]         List running sessions
     stop [--yes] NAME|--all  Stop running sessions (--all asks unless --yes)
     install [OPTS]      First-time install / repair PATH, config, completions, aliases
-    uninstall [OPTS]    Remove the shell integration (--image, --purge-config)
+    uninstall [OPTS]    Remove the shell integration (--image, --purge-config, --all-profiles)
     upgrade [--check|--yes|--no-build|--verify|--pi-version X]  Full upgrade: git pull + sync + image rebuild
     update  [--check|--yes|--no-build|--verify|--pi-version X]  Same, without the confirmation prompt
     build [--pi-version X] [--bust-cache] [--fresh]  Build the image (smoke-tested before it replaces the current one)
-    pull [TAG] [--no-verify]  Fetch the prebuilt, signed image instead of building
+    pull [TAG] [--no-verify|--allow-downgrade]  Fetch the prebuilt, signed image instead of building
     rollback            Go back to the image the last build/pull replaced
     version             Show wrapper, image, guard, policy-set and Pi versions
     config [show|edit|get|set|path|sync|profiles]  Wrapper config (INI)

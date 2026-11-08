@@ -13,6 +13,9 @@
 DOCKER_CMD=()
 SESSION_PROJECT=""
 SESSION_CONTAINER=""
+# Largest `exec` prompt passed as a single argument (Linux MAX_ARG_STRLEN is
+# 128 KiB; leave headroom).
+EXEC_PROMPT_MAX_BYTES=120000
 
 # Resolve a project directory to an absolute, symlink-free path and refuse the
 # ones that would expose the home directory (or a parent of it).
@@ -26,6 +29,9 @@ resolve_project_dir() {
     # A symlink to $HOME or / must not slip past validate_project_dir.
     dir="$(cd "$dir" && pwd -P)"
     validate_project_dir "$dir" || exit "$E_USAGE"
+    # The project is a read-write mount: the same gate as custom mounts keeps
+    # credential stores, the wrapper's config/secrets and socket dirs out.
+    validate_mount_source "$dir" "the project" || exit "$E_USAGE"
     printf '%s' "$dir"
 }
 
@@ -302,6 +308,19 @@ exec_prompt() {
     if [ "${#pi_args[@]}" -eq 0 ] || [ -z "${pi_args[0]}" ]; then
         print_error "A message is required: $0 exec [--dir DIR] \"<message>\" [OPTIONS]  (or pipe it on stdin)"
         exit 1
+    fi
+    # The prompt reaches `pi --print` as one argument: Linux caps a single
+    # argument at 128 KiB (and the docker command line is visible in `ps` to
+    # other local users), so a large prompt belongs in a project file.
+    local prompt_bytes
+    prompt_bytes=$(
+        LC_ALL=C
+        printf '%s' "${#pi_args[0]}"
+    )
+    if [ "$prompt_bytes" -gt "$EXEC_PROMPT_MAX_BYTES" ]; then
+        print_error "The prompt is $prompt_bytes bytes; the limit is $EXEC_PROMPT_MAX_BYTES."
+        print_info "Save the content in a file inside the project and ask Pi to read it instead."
+        exit "$E_USAGE"
     fi
     # A message starting with `-` would parse as a pi flag: separate it with
     # `--`, but only then, so trailing pi flags (`exec "msg" --model x`) keep

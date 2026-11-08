@@ -253,16 +253,18 @@ show_audit() {
         : >"$log"
         print_success "Audit log cleared."
         ;;
+    # The log is written from inside the container: strip control characters
+    # so an entry cannot inject terminal escape sequences.
     summary)
         if [ -s "$log" ]; then
-            grep -o '"rule":"[^"]*"' "$log" | sort | uniq -c | sort -rn
+            grep -o '"rule":"[^"]*"' "$log" | sort | uniq -c | sort -rn | strip_control_chars
         else
             print_info "No blocked calls recorded."
         fi
         ;;
     *)
         if [ -s "$log" ]; then
-            tail -n "$count" "$log"
+            tail -n "$count" "$log" | strip_control_chars
         else
             print_info "No blocked calls recorded."
         fi

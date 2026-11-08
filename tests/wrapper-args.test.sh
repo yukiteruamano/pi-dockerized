@@ -298,7 +298,7 @@ if validate_mount_source "$TMP/evil-home" "evil" >/dev/null 2>&1; then
     fail "a symlink to HOME must be refused as a mount source"
 fi
 if validate_mount_source "$HOME/.ssh" "evil" >/dev/null 2>&1; then
-    fail "~/.ssh must be refused as a mount source"
+    fail "\$HOME/.ssh must be refused as a mount source"
 fi
 # A project that would land on /etc in the container must be refused.
 if validate_container_path "/etc" "project" >/dev/null 2>&1; then
@@ -347,6 +347,169 @@ rm -f "$PROJECT/.env" "$PROJECT/creds.pem" "$PROJECT/.env.example"
 empty_warn=$(warn_project_secrets 2>&1)
 [ -z "$empty_warn" ] || fail "warning must stay silent without secrets (got: $empty_warn)"
 SESSION_PROJECT=""
+
+# --- Project directory gate (same policy as custom mounts) -----------------------
+# `run` is driven through the fake docker; a refused project exits non-zero.
+dry_run() { PATH="$FAKE_BIN:$PATH" DRY_RUN=true "$REPO_DIR/bin/pi-dockerized" "$@"; }
+mkdir -p "$HOME/.ssh" "$HOME/.config/pi-dockerized"
+dry_run run "$HOME/.ssh" >/dev/null 2>&1 && fail "\$HOME/.ssh must be refused as the project"
+dry_run run "$CONFIG_DIR" >/dev/null 2>&1 && fail "the wrapper config dir must be refused as the project"
+dry_run run "$HOME/.config/pi-dockerized" >/dev/null 2>&1 && fail "the config root must be refused as the project"
+dry_run run "$PI_HOME" >/dev/null 2>&1 && fail "the state tree must be refused as the project"
+if [ -d /run ]; then
+    dry_run run /run >/dev/null 2>&1 && fail "/run (Docker and agent sockets) must be refused as the project"
+fi
+# A project whose container path lands inside the agent dir would replace the guard.
+mkdir -p "$HOME/home/coder/.pi/agent/extensions/x"
+dry_run run "$HOME/home/coder/.pi/agent/extensions/x" >/dev/null 2>&1 && fail "a project over the agent dir must be refused"
+
+# A symlinked $HOME (macOS /Users, NFS): the project path is resolved, $HOME is not.
+mkdir -p "$TMP/realhome/proj"
+ln -s "$TMP/realhome" "$TMP/linkhome"
+HOME="$TMP/linkhome" dry_run run "$TMP/linkhome" >/dev/null 2>&1 && fail "a symlinked HOME must be refused as the project"
+HOME="$TMP/linkhome" dry_run run "$TMP/realhome" >/dev/null 2>&1 && fail "the resolved HOME must be refused as the project"
+out="$(HOME="$TMP/linkhome" dry_run run "$TMP/linkhome/proj" 2>&1)" || fail "a project in a symlinked HOME must work (got: $out)"
+assert_contains "$out" "$TMP/realhome/proj:/proj" "the symlinked HOME prefix must be stripped from the container path"
+
+# --- Mount sources and targets ------------------------------------------------------
+for bad_src in /run /var/run /proc/1/root /sys /dev; do
+    validate_mount_source "$bad_src" "t" >/dev/null 2>&1 && fail "mount source $bad_src must be refused"
+done
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    validate_mount_source "$XDG_RUNTIME_DIR" "t" >/dev/null 2>&1 && fail "XDG_RUNTIME_DIR must be refused"
+fi
+validate_mount_source /run/media/user/usb/proj "t" >/dev/null 2>&1 || fail "removable media under /run/media must stay allowed"
+for bad_dst in /etc/ld.so.preload /bin/sh /usr/lib /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/local/bin/pi; do
+    validate_container_path "$bad_dst" "t" >/dev/null 2>&1 && fail "mount target $bad_dst must be refused"
+done
+
+# --- --untrusted ----------------------------------------------------------------------
+parse_session_flags --untrusted --policy balanced
+(apply_session_overrides >/dev/null 2>&1) && fail "--untrusted must refuse --policy balanced"
+dry_run run --untrusted --policy balanced "$PROJECT" >/dev/null 2>&1 && fail "run --untrusted --policy balanced must fail"
+parse_session_flags --untrusted --policy strict
+ALLOWED_TOOLS="bash_evil"
+apply_session_overrides || fail "--untrusted --policy strict must apply"
+[ -z "$ALLOWED_TOOLS" ] || fail "--untrusted must clear allowed_tools"
+mkdir -p "$AGENT/prompts" "$AGENT/themes"
+build_standard_volume_args "$PROJECT" false
+vols=" ${VOLUME_ARGS[*]} "
+for shared in "/home/coder/.npm" "/home/coder/.cache/qmd" "/home/coder/.pi-lens" "mcp-auth.json" "trust.json" \
+    "mcp.json" "/home/coder/.claude" "/home/coder/.agents" "$AGENT/sessions:"; do
+    assert_not_contains "$vols" "$shared" "--untrusted must not share $shared"
+done
+assert_contains "$vols" "$AGENT/sessions-untrusted:/home/coder/.pi/agent/sessions:rw" "--untrusted uses its own session store"
+assert_contains "$vols" "$AGENT/prompts:/home/coder/.pi/agent/prompts:ro" "--untrusted reads prompt templates only"
+assert_contains "$vols" "$AGENT/auth.json:/home/coder/.pi/agent/auth.json:rw" "--untrusted keeps provider logins"
+[ "$(stat -c %a "$AGENT/sessions-untrusted")" = 700 ] || fail "the untrusted session store must be private"
+SESSION_UNTRUSTED=false SESSION_POLICY=""
+ALLOWED_TOOLS=""
+
+# --- Git worktree mount ---------------------------------------------------------------
+if command -v git >/dev/null 2>&1; then
+    WT_MAIN="$TMP/wt-main"
+    mkdir -p "$WT_MAIN"
+    git -c init.defaultBranch=main -C "$WT_MAIN" init -q
+    git -C "$WT_MAIN" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+    git -C "$WT_MAIN" worktree add -q "$TMP/wt-linked" -b side 2>/dev/null
+    assert_contains "$(detect_git_worktree "$TMP/wt-linked")" "$WT_MAIN/.git" "a real linked worktree is detected"
+    SESSION_UNTRUSTED=true
+    build_git_worktree_args "$TMP/wt-linked"
+    SESSION_UNTRUSTED=false
+    [ "${#GIT_WORKTREE_ARGS[@]}" -eq 0 ] || fail "--untrusted must not mount the main .git directory"
+
+    # A planted pointer must not mount another private repo.
+    VICTIM="$TMP/victim"
+    mkdir -p "$VICTIM/.git/objects" "$VICTIM/.git/refs" "$TMP/evil/gd"
+    printf 'gitdir: %s\n' "$TMP/evil/gd" >"$TMP/evil/.git"
+    printf 'ref: refs/heads/main\n' >"$TMP/evil/gd/HEAD"
+    printf '%s\n' "$VICTIM/.git" >"$TMP/evil/gd/commondir"
+    [ -z "$(detect_git_worktree "$TMP/evil")" ] || fail "a planted commondir must not be mounted"
+    mkdir -p "$VICTIM/.git/worktrees/x"
+    printf 'gitdir: %s\n' "$VICTIM/.git/worktrees/x" >"$TMP/evil/.git"
+    [ -z "$(detect_git_worktree "$TMP/evil")" ] || fail "a worktree entry that does not point back must not be mounted"
+fi
+
+# --- GnuPG relay dir and socket overrides ------------------------------------------------
+out="$(env -u PI_DOCKERIZED_TEST GPG_RELAY_DIR="$HOME/work" bash -c 'source "$1/lib/config-lib.sh"; printf %s "$GPG_RELAY_DIR"' _ "$REPO_DIR")"
+assert_eq() { [ "$1" = "$2" ] || fail "$3 (want '$2', got '$1')"; }
+assert_eq "$out" "$CONFIG_DIR/gnupg-relay" "GPG_RELAY_DIR from the environment must be ignored outside test mode"
+out="$(env -u PI_DOCKERIZED_TEST GPG_AGENT_SOCKET="$TMP/owned.sock" bash -c 'source "$1/lib/config-lib.sh"; resolve_gpg_agent_socket' _ "$REPO_DIR" 2>/dev/null)"
+assert_not_contains "$out" "$TMP/owned.sock" "GPG_AGENT_SOCKET must be ignored outside test mode"
+# Even in test mode, cleanup only removes the relay entries it created.
+RELAY_TEST="$TMP/relays"
+mkdir -p "$RELAY_TEST/projA/src" "$RELAY_TEST/99999999"
+: >"$RELAY_TEST/99999999/pid"
+PI_DOCKERIZED_TEST=1 GPG_RELAY_DIR="$RELAY_TEST" GPG_AGENT_SUPPORT=true cleanup_stale_relays
+[ -d "$RELAY_TEST/projA/src" ] || fail "relay cleanup must never delete unrelated directories"
+[ ! -e "$RELAY_TEST/99999999" ] || fail "relay cleanup must remove a stale relay entry"
+
+# --- GnuPG mirror: no host writes through planted symlinks ---------------------------------
+HOST_GNUPG="$TMP/host-gnupg"
+mkdir -p "$HOST_GNUPG/public-keys.d" "$PI_HOME/.gnupg"
+printf 'keyring\n' >"$HOST_GNUPG/pubring.kbx"
+printf 'db\n' >"$HOST_GNUPG/public-keys.d/pubring.db"
+printf 'untouched\n' >"$TMP/victim-file"
+mkdir -p "$TMP/victim-dir"
+ln -sfn "$TMP/victim-file" "$PI_HOME/.gnupg/gpg.conf"
+ln -sfn "$TMP/victim-file" "$PI_HOME/.gnupg/pubring.kbx"
+ln -sfn "$TMP/victim-dir" "$PI_HOME/.gnupg/public-keys.d"
+GNUPGHOME="$HOST_GNUPG" ensure_gpg_mirror >/dev/null 2>&1
+assert_eq "$(cat "$TMP/victim-file")" "untouched" "the mirror must not write through a planted symlink"
+[ ! -e "$TMP/victim-dir/pubring.db" ] || fail "the mirror must not write into a planted directory symlink"
+[ ! -L "$PI_HOME/.gnupg/gpg.conf" ] && grep -qx 'no-autostart' "$PI_HOME/.gnupg/gpg.conf" || fail "gpg.conf must be a real file with no-autostart"
+assert_eq "$(cat "$PI_HOME/.gnupg/public-keys.d/pubring.db")" "db" "the keyboxd database must be mirrored"
+
+# --- Env file: dangerous keys and a symlinked config dir --------------------------------------
+for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH; do
+    printf 'ANTHROPIC_API_KEY=x\n%s=y\n' "$bad_key" >"$env_ok"
+    (
+        ENV_FILE="$env_ok"
+        build_env_file_args >/dev/null 2>&1
+    ) && fail "env file setting $bad_key must be refused"
+done
+printf 'export NODE_OPTIONS=--require=/x\n' >"$env_ok"
+(ENV_FILE="$env_ok" build_env_file_args >/dev/null 2>&1) && fail "an 'export' prefix must not hide a forbidden key"
+printf 'ANTHROPIC_API_KEY=x\n' >"$env_ok"
+ln -s "$CONFIG_DIR" "$TMP/cfglink"
+(CONFIG_DIR="$TMP/cfglink" ENV_FILE="$TMP/cfglink/env" build_env_file_args >/dev/null 2>&1) ||
+    fail "an env file under a symlinked config dir must be accepted"
+
+# env_file_upsert stages next to the file (never in a shared temp dir) and keeps it private.
+UPSERT="$CONFIG_DIR/upsert-env"
+printf 'A=1\nB=2\n' >"$UPSERT"
+TMPDIR="$TMP/no-such-dir" env_file_upsert "$UPSERT" A 3 || fail "env_file_upsert must not depend on TMPDIR"
+assert_eq "$(cat "$UPSERT")" "$(printf 'B=2\nA=3')" "env_file_upsert replaces the key"
+assert_eq "$(stat -c %a "$UPSERT")" "600" "the secrets file must stay 0600"
+env_file_upsert "$UPSERT" B 4 && env_file_upsert "$UPSERT" A 5 || fail "env_file_upsert of the last remaining key"
+[ -z "$(find "$CONFIG_DIR" -maxdepth 1 -name 'upsert-env.*')" ] || fail "env_file_upsert must not leave temp files"
+
+# --- Audit output hygiene -------------------------------------------------------------------
+printf '{"ts":"t","tool":"bash","rule":"x\033]0;pwn\007","target":"y\033[2J"}\n' >"$AGENT/audit.log"
+out="$(NO_COLOR=1 PATH="$FAKE_BIN:$PATH" "$REPO_DIR/bin/pi-dockerized" audit 2>&1)"
+assert_not_contains "$out" $'\033' "audit must strip escape bytes written by the container"
+out="$(NO_COLOR=1 PATH="$FAKE_BIN:$PATH" "$REPO_DIR/bin/pi-dockerized" audit --summary 2>&1)"
+assert_not_contains "$out" $'\033' "audit --summary must strip escape bytes"
+: >"$AGENT/audit.log"
+
+# --- exec prompt size ------------------------------------------------------------------------
+out="$(head -c 130000 /dev/zero | tr '\0' a | dry_run exec - 2>&1)" && fail "an oversized exec prompt must be refused"
+assert_contains "$out" "limit" "an oversized exec prompt explains the limit"
+
+# --- rc files: only the installer's exact lines are managed ------------------------------------
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/install-lib.sh"
+RC2="$TMP/rc-test"
+# shellcheck disable=SC2016 # literal rc file content
+printf '%s\n' '# old: pi-dockerized/bin was here' >"$RC2"
+ensure_path_in_rc "$RC2" || fail "a commented mention must not count as the PATH line"
+# shellcheck disable=SC2016 # literal rc file content
+printf '%s\n' 'export PATH="$HOME/bin:$HOME/.local/share/pi-dockerized/bin:$PATH"' \
+    '[ -f "/opt/other/completions/bash.sh" ] && source "/opt/other/completions/bash.sh"' >>"$RC2"
+remove_managed_rc_lines "$RC2" || fail "uninstall must remove the installer's lines"
+assert_contains "$(cat "$RC2")" 'export PATH="$HOME/bin:' "uninstall must keep a user's combined PATH line"
+assert_contains "$(cat "$RC2")" "/opt/other/completions/bash.sh" "uninstall must keep another tool's completion line"
+assert_not_contains "$(cat "$RC2")" "# Added by pi-dockerized install" "uninstall removes the marker"
 
 # --- Docs coverage ---------------------------------------------------------------
 # docs/config-reference.md must document every setting (single source: SETTING_KEYS).

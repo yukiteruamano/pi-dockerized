@@ -12,21 +12,27 @@
 # Credential stores under $HOME that must never reach the agent.
 SENSITIVE_HOME_PATHS=(.ssh .gnupg .aws .kube .docker .config/gcloud .config/gh .netrc .git-credentials)
 
-# Container paths a mount must not equal or sit above: it would hide them.
+# Container paths no mount (custom or the project) may equal, sit above (it
+# would hide them) or sit below (it would replace part of them, e.g.
+# /etc/ld.so.preload, /bin/sh or the guard): the system, the baked read-only
+# tooling and the agent directory with the wrapper's own state mounts.
 CONTAINER_SHADOW_PATHS=(
-    /bin /sbin /lib /lib32 /lib64 /libx32 /usr/bin /usr/local/bin /etc /dev /proc /sys
+    /bin /sbin /lib /lib32 /lib64 /libx32 /usr /etc /dev /proc /sys
     /usr/local/lib/pi-dockerized /home/coder/.nvm /home/coder/.local
-    /home/coder/.pi/agent/extensions /home/coder/.pi/agent/settings.json
-    /home/coder/.pi/agent/AGENTS.md
+    /home/coder/.pi/agent /home/coder/.pi/ext-agent
 )
 
-# Container paths a custom mount must not target at or below: the baked tooling
-# (guard, settings) and the wrapper's own state mounts.
-CONTAINER_INTERNAL_PATHS=(
-    /home/coder/.pi/agent /home/coder/.pi/ext-agent /home/coder/.nvm /home/coder/.local
-    /usr/local/bin
-    /usr/local/lib/pi-dockerized
-)
+# Data-only locations under the protected system paths that a custom mount may
+# still target (strictly below them): extra CA certificates for proxies.
+CONTAINER_MOUNT_EXCEPTIONS=(/etc/ssl/certs /usr/local/share/ca-certificates)
+
+# Host directories that hold sockets (Docker, containerd, agents, D-Bus): a bind
+# mount of the directory hands every socket in it to the agent, and a read-only
+# bind does not stop connect(). Removable media under /run/media stay allowed.
+HOST_SOCKET_DIRS=(/run /var/run)
+
+# Pseudo filesystems: /proc/<pid>/root and friends reach the host's root.
+HOST_PSEUDO_FS=(/proc /sys /dev)
 
 # Lexically normalize an absolute path: collapse `//`, `.` and `..` without
 # touching the filesystem (container paths do not exist on the host).
@@ -46,23 +52,35 @@ normalize_path() {
     printf '%s' "${out:-/}"
 }
 
-# Refuse a container path that would hide system or wrapper paths.
-# `internal` = also refuse targets inside the baked tooling (custom mounts).
-# Usage: validate_container_path <path> <what> [internal]
-validate_container_path() {
-    local path="$1" what="$2" internal="${3:-}" norm other
-    norm=$(normalize_path "$path")
-    for other in "${CONTAINER_SHADOW_PATHS[@]}"; do
-        if path_within "$other" "$norm"; then
-            config_error "Refusing $what at $norm inside the container: it would hide $other."
-            config_info "Move the project or rename the directory so its container path differs."
-            return 1
+# True when two paths overlap: one equals or contains the other.
+# Usage: paths_overlap <a> <b>
+paths_overlap() {
+    path_within "$1" "$2" || path_within "$2" "$1"
+}
+
+# True when a container target lies strictly inside an allowed data location.
+# Usage: container_path_excepted <normalized_path>
+container_path_excepted() {
+    local exc
+    for exc in "${CONTAINER_MOUNT_EXCEPTIONS[@]}"; do
+        if [ "$1" != "$exc" ] && path_within "$1" "$exc"; then
+            return 0
         fi
     done
-    [ "$internal" = internal ] || return 0
-    for other in "${CONTAINER_INTERNAL_PATHS[@]}"; do
-        if path_within "$norm" "$other"; then
-            config_error "Refusing $what at $norm: $other is part of the baked, read-only image."
+    return 1
+}
+
+# Refuse a container path that would hide or replace system, tooling or
+# wrapper paths (see CONTAINER_SHADOW_PATHS).
+# Usage: validate_container_path <path> <what>
+validate_container_path() {
+    local path="$1" what="$2" norm other
+    norm=$(normalize_path "$path")
+    container_path_excepted "$norm" && return 0
+    for other in "${CONTAINER_SHADOW_PATHS[@]}"; do
+        if paths_overlap "$norm" "$other"; then
+            config_error "Refusing $what at $norm inside the container: it would hide or replace $other."
+            config_info "Move the project or rename the directory so its container path differs."
             return 1
         fi
     done
@@ -79,7 +97,7 @@ forbidden_mount_reason() {
         return 0
     fi
     for rel in "${SENSITIVE_HOME_PATHS[@]}"; do
-        if path_within "$path" "$home/$rel" || path_within "$home/$rel" "$path"; then
+        if paths_overlap "$path" "$home/$rel"; then
             case "$rel" in
             .ssh) echo "it would expose SSH private keys (use setting.ssh_agent_support=true)" ;;
             .gnupg) echo "it would expose GnuPG private keys (use setting.gpg_agent_support=true)" ;;
@@ -88,21 +106,39 @@ forbidden_mount_reason() {
             return 0
         fi
     done
-    # The wrapper's config root (every profile) and the active config dir hold
-    # the secrets file and the state tree.
+    # The wrapper's config root (every profile), the active config dir and the
+    # state tree hold the secrets file, the config and the state.
     for root in "$PI_CONFIG_ROOT" "$(canonical_path "$PI_CONFIG_ROOT")" \
-        "$CONFIG_DIR" "$(canonical_path "$CONFIG_DIR")"; do
-        if path_within "$path" "$root" || path_within "$root" "$path"; then
+        "$CONFIG_DIR" "$(canonical_path "$CONFIG_DIR")" \
+        "$PI_HOME" "$(canonical_path "$PI_HOME")"; do
+        if paths_overlap "$path" "$root"; then
             echo "it holds the wrapper's secrets file and state ($root)"
             return 0
         fi
     done
+    for root in "${HOST_PSEUDO_FS[@]}"; do
+        if path_within "$path" "$root"; then
+            echo "it is a pseudo filesystem ($root) that reaches the host"
+            return 0
+        fi
+    done
     case "$path" in
-    */docker.sock)
-        echo "it is the Docker socket (use setting.docker_socket=true, which is root-equivalent)"
+    */docker.sock | */podman.sock | */containerd.sock)
+        echo "it is a container engine socket (use setting.docker_socket=true, which is root-equivalent)"
         return 0
         ;;
     esac
+    local -a socket_dirs=("${HOST_SOCKET_DIRS[@]}")
+    [ -n "${XDG_RUNTIME_DIR:-}" ] && socket_dirs+=("$XDG_RUNTIME_DIR" "$(canonical_path "$XDG_RUNTIME_DIR")")
+    for root in "${socket_dirs[@]}"; do
+        case "$path" in
+        /run/media/?*/?* | /var/run/media/?*/?*) continue ;;
+        esac
+        if paths_overlap "$path" "$root"; then
+            echo "it is or contains a runtime socket directory ($root: Docker, agent and D-Bus sockets)"
+            return 0
+        fi
+    done
     return 0
 }
 

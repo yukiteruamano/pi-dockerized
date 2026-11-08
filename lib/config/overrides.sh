@@ -107,11 +107,14 @@ _set_session_flag() {
 # Usage: apply_session_overrides
 apply_session_overrides() {
     if [ "$SESSION_UNTRUSTED" = true ]; then
-        if [ "$SESSION_POLICY" = off ] || [ "$SESSION_NETWORK" = host ]; then
-            config_error "--untrusted cannot be combined with --policy off or --network host."
+        if { [ -n "$SESSION_POLICY" ] && [ "$SESSION_POLICY" != strict ]; } ||
+            [ "$SESSION_NETWORK" = host ]; then
+            config_error "--untrusted only runs with --policy strict and --network bridge."
             return 1
         fi
         SECURITY_POLICY="strict"
+        # Extra tools would widen strict mode for code you do not trust.
+        ALLOWED_TOOLS=""
         NETWORK="bridge"
         SSH_AGENT_SUPPORT=false
         GPG_AGENT_SUPPORT=false

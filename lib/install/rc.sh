@@ -9,17 +9,15 @@
 # Usage: ensure_path_in_rc <rcfile>
 ensure_path_in_rc() {
     local rc_file="$1"
-    # Single quotes are intentional: $HOME/$PATH must stay unexpanded in the rc line.
-    # shellcheck disable=SC2016
-    local path_line='export PATH="$HOME/.local/share/pi-dockerized/bin:$PATH"'
     [ -f "$rc_file" ] || : >"$rc_file" 2>/dev/null || return 2
-    if grep -qF -- 'pi-dockerized/bin' "$rc_file" 2>/dev/null; then
+    # A mention in a comment does not put anything on PATH.
+    if grep -v '^[[:space:]]*#' "$rc_file" 2>/dev/null | grep -qF -- 'pi-dockerized/bin'; then
         return 1
     fi
     {
         echo ""
         echo "# Added by pi-dockerized install"
-        echo "$path_line"
+        echo "$PI_BIN_PATH_LINE"
     } >>"$rc_file" || return 2
     return 0
 }

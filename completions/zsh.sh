@@ -113,13 +113,13 @@ _pi_dockerized() {
                     _values 'build flag' --pi-version --bust-cache --fresh
                     ;;
                 pull)
-                    _values 'pull flag' --no-verify
+                    _values 'pull flag' --no-verify --allow-downgrade
                     ;;
                 install)
                     _values 'install flag' --yes --only
                     ;;
                 uninstall)
-                    _values 'uninstall flag' --yes --image --purge-config
+                    _values 'uninstall flag' --yes --image --purge-config --all-profiles
                     ;;
             esac
             ;;

@@ -83,12 +83,18 @@ env_file_upsert() {
     mkdir -p "$(dirname "$file")" 2>/dev/null || true
     [ -f "$file" ] || install -m 600 /dev/null "$file" 2>/dev/null || : >"$file"
     chmod 600 "$file" 2>/dev/null || true
-    local tmp
-    tmp=$(mktemp 2>/dev/null) || return 1
-    grep -vE "^[[:space:]]*${key}=" "$file" >"$tmp" 2>/dev/null || : >"$tmp"
-    printf '%s=%s\n' "$key" "$value" >>"$tmp"
-    cat "$tmp" >"$file" 2>/dev/null || true
-    rm -f "$tmp"
+    # The new contents are staged next to the file (mktemp creates it 0600 in
+    # the private config dir), never in a shared temp dir, then renamed into
+    # place so the secrets file is never left half-written.
+    local tmp rc=0
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 1
+    # grep exits 1 when every line was dropped (fine), 2 on a read error.
+    grep -vE "^[[:space:]]*${key}=" "$file" >"$tmp" 2>/dev/null || rc=$?
+    if [ "$rc" -gt 1 ] || ! printf '%s=%s\n' "$key" "$value" >>"$tmp" ||
+        ! mv -f "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 # One-shot migration of legacy env.* entries into the secrets file.
@@ -132,10 +138,17 @@ prompt_env_vars() {
             echo "Invalid variable name (use A-Z, 0-9, _)."
             continue
         fi
+        if env_key_forbidden "$key"; then
+            echo "$key controls the sandbox or the runtime and cannot be set in the secrets file."
+            continue
+        fi
         read -r -s -p "Value for $key: " value || value=""
         echo ""
-        env_file_upsert "$env_file" "$key" "$value"
-        echo "Saved $key (value hidden)."
+        if env_file_upsert "$env_file" "$key" "$value"; then
+            echo "Saved $key (value hidden)."
+        else
+            echo "Could not save $key to $env_file."
+        fi
     done
     ENV_FILE="$env_file"
 }
@@ -310,7 +323,7 @@ print_session_exposure() {
     summary="$summary extensions=$(_onoff "$ext")"
     summary="$summary mounts=${#CUSTOM_MOUNTS[@]} env-file=$env_file"
     [ -n "$PI_PROFILE" ] && summary="profile=$PI_PROFILE $summary"
-    [ "$SESSION_UNTRUSTED" = true ] && summary="untrusted $summary"
+    [ "$SESSION_UNTRUSTED" = true ] && summary="untrusted $summary shared-state=off"
     print_info "Exposure: $summary"
     if [ "$SECURITY_POLICY" = off ]; then
         print_warning "Security policy is 'off': only the built-in backstops are enforced."

@@ -21,9 +21,19 @@ IMAGE_NAME="pi-dockerized:latest"
 WRAPPER_VERSION="0.16.0"
 
 # Keep temporary files in the approved scratch dir unless overridden.
-# Bare `mktemp` honors TMPDIR, so relay sockets and logs land there.
-export TMPDIR="${TMPDIR:-/tmp/pi}"
-mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR="/tmp"
+# Bare `mktemp` honors TMPDIR, so relay sockets and logs land there. /tmp/pi is
+# a fixed name in a shared directory: use it only when this user owns it and
+# nobody else can write to it (another user could pre-create it and swap the
+# files inside); otherwise plain /tmp, where mktemp's O_EXCL files are safe.
+if [ -z "${TMPDIR:-}" ]; then
+    TMPDIR=/tmp/pi
+    (umask 077 && mkdir -p "$TMPDIR") 2>/dev/null || true
+    if [ -L "$TMPDIR" ] || [ ! -d "$TMPDIR" ] || [ ! -O "$TMPDIR" ] ||
+        [ $((8#$(stat -c '%a' "$TMPDIR" 2>/dev/null || echo 777) & 8#022)) -ne 0 ]; then
+        TMPDIR=/tmp
+    fi
+    export TMPDIR
+fi
 
 # The profile decides where the config lives, so it is read before the config
 # library is sourced. `--profile NAME` is a global flag in front of the command.

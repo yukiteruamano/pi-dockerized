@@ -49,8 +49,12 @@ PI_EXT_AGENT_CONTAINER_DIR="/home/coder/.pi/ext-agent"
 
 # Directory holding active GPG relay sockets (one subdir per session). The relay
 # lives on a normal filesystem so Docker can bind it (it cannot bind sockets
-# under the per-user /run/user tmpfs).
-GPG_RELAY_DIR="${GPG_RELAY_DIR:-$CONFIG_DIR/gnupg-relay}"
+# under the per-user /run/user tmpfs). Stale entries in it are deleted, so it is
+# pinned under the config dir: an override from the environment is honored in
+# test mode only (PI_DOCKERIZED_TEST=1, like test_seam).
+if [ "${PI_DOCKERIZED_TEST:-}" != 1 ] || [ -z "${GPG_RELAY_DIR:-}" ]; then
+    GPG_RELAY_DIR="$CONFIG_DIR/gnupg-relay"
+fi
 
 # Self-contained install location (Doom-style). The git checkout lives here;
 # the binary is always <install>/bin/pi-dockerized, reached via PATH.
@@ -96,7 +100,13 @@ fi
 # come from paths, config files or the environment must not be able to inject
 # terminal escape sequences. Tab and newline are kept.
 safe_text() {
-    printf '%s' "$1" | tr -d '\000-\010\013-\037\177'
+    printf '%s' "$1" | strip_control_chars
+}
+
+# Filter form of safe_text for text read from files (stdin to stdout).
+# Usage: tail -n 5 file | strip_control_chars
+strip_control_chars() {
+    tr -d '\000-\010\013-\037\177'
 }
 
 # Info and success go to stdout; warnings and errors to stderr, so command
@@ -180,21 +190,28 @@ SESSION_UNTRUSTED=false            # --untrusted: strict policy, bridge network,
 #          /opt/work/myproject                -> /opt/work/myproject (unchanged)
 # Usage: container_path=$(compute_container_path "/home/user/projects/myapp")
 compute_container_path() {
-    local host_path="$1"
-
-    if [[ "$host_path" == "$HOME"/* ]]; then
-        echo "${host_path#"$HOME"}"
-    else
-        echo "$host_path"
-    fi
+    local host_path="$1" home home_real
+    home_real=$(canonical_path "$HOME")
+    # The project path is canonical (symlinks resolved): strip either spelling
+    # of a symlinked $HOME.
+    for home in "$HOME" "$home_real"; do
+        if [[ "$host_path" == "$home"/* ]]; then
+            echo "${host_path#"$home"}"
+            return 0
+        fi
+    done
+    echo "$host_path"
 }
 
 # Reject project directories that would expose the host home or the whole
 # filesystem to the sandbox: "/", $HOME, and any ancestor of $HOME (e.g. /home)
-# are refused. Only a project subdirectory is allowed.
+# are refused, for the literal and the symlink-resolved $HOME alike (the project
+# path is resolved, a symlinked home is not). Only a project subdirectory is
+# allowed; credential stores and the wrapper's own state are refused by
+# validate_mount_source.
 # Usage: validate_project_dir "/abs/path" || exit 1
 validate_project_dir() {
-    local project_dir="$1"
+    local project_dir="$1" home
 
     if [ -z "$project_dir" ]; then
         config_error "A project directory is required."
@@ -207,20 +224,21 @@ validate_project_dir() {
         return 1
     fi
 
-    if [ "$project_dir" = "$HOME" ]; then
-        config_error "Refusing to run with the home directory ($HOME) as the project."
-        config_info "Pass a project subdirectory instead."
-        return 1
-    fi
-
-    # Any ancestor of $HOME (e.g. /home) would expose the home through the mount.
-    case "$HOME" in
-    "$project_dir"/*)
-        config_error "Refusing to run with '$project_dir' as the project: it contains your home directory."
-        config_info "Pass a project subdirectory instead (e.g. ~/projects/my-app)."
-        return 1
-        ;;
-    esac
+    for home in "$HOME" "$(canonical_path "$HOME")"; do
+        if [ "$project_dir" = "$home" ]; then
+            config_error "Refusing to run with the home directory ($HOME) as the project."
+            config_info "Pass a project subdirectory instead."
+            return 1
+        fi
+        # Any ancestor of $HOME (e.g. /home) would expose the home through the mount.
+        case "$home" in
+        "$project_dir"/*)
+            config_error "Refusing to run with '$project_dir' as the project: it contains your home directory."
+            config_info "Pass a project subdirectory instead (e.g. ~/projects/my-app)."
+            return 1
+            ;;
+        esac
+    done
 
     return 0
 }

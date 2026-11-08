@@ -23,11 +23,13 @@ forwarding_socket_ok() {
 }
 
 # Resolve the host's gpg-agent socket path.
-# Prefers an explicit override (GPG_AGENT_SOCKET, used by tests), then gpgconf.
-# Prints an empty string when neither is available.
+# Prefers the GPG_AGENT_SOCKET test override (test mode only, see test_seam),
+# then gpgconf. Prints an empty string when neither is available.
 resolve_gpg_agent_socket() {
-    if [ -n "${GPG_AGENT_SOCKET:-}" ]; then
-        echo "$GPG_AGENT_SOCKET"
+    local override
+    override=$(test_seam GPG_AGENT_SOCKET)
+    if [ -n "$override" ]; then
+        echo "$override"
         return 0
     fi
     if command -v gpgconf >/dev/null 2>&1; then
@@ -37,11 +39,13 @@ resolve_gpg_agent_socket() {
 
 # Resolve the host's restricted gpg-agent "extra" socket path. This socket only
 # allows signing/decryption, so a forwarded container cannot reconfigure the
-# host agent. Prefers an explicit override (GPG_AGENT_EXTRA_SOCKET, used by
-# tests), then gpgconf. Prints an empty string when neither is available.
+# host agent. Prefers the GPG_AGENT_EXTRA_SOCKET test override (test mode
+# only), then gpgconf. Prints an empty string when neither is available.
 resolve_gpg_agent_extra_socket() {
-    if [ -n "${GPG_AGENT_EXTRA_SOCKET:-}" ]; then
-        echo "$GPG_AGENT_EXTRA_SOCKET"
+    local override
+    override=$(test_seam GPG_AGENT_EXTRA_SOCKET)
+    if [ -n "$override" ]; then
+        echo "$override"
         return 0
     fi
     if command -v gpgconf >/dev/null 2>&1; then
@@ -56,7 +60,7 @@ resolve_gpg_agent_extra_socket() {
 #   - GPG_AGENT_PROBE_CMD replaces the probe with an arbitrary command (only
 #     honored with PI_DOCKERIZED_TEST=1, see test_seam).
 #   - GPG_AGENT_SOCKET / GPG_AGENT_EXTRA_SOCKET (plain test sockets, not real
-#     agents) skip the probe and trust the socket.
+#     agents; test mode only) skip the probe and trust the socket.
 # Usage: gpg_agent_is_running
 gpg_agent_is_running() {
     local extra main
@@ -75,7 +79,7 @@ gpg_agent_is_running() {
     fi
 
     # Test sockets are not real agents: trust the socket.
-    if [ -n "${GPG_AGENT_SOCKET:-}" ] || [ -n "${GPG_AGENT_EXTRA_SOCKET:-}" ]; then
+    if [ -n "$(test_seam GPG_AGENT_SOCKET)" ] || [ -n "$(test_seam GPG_AGENT_EXTRA_SOCKET)" ]; then
         return 0
     fi
 
@@ -211,6 +215,13 @@ ensure_gpg_mirror() {
         return 0
     fi
 
+    # The mirror is mounted read-write, so a session can plant symlinks in it:
+    # every host-side write below goes through _mirror_copy (temp file + rename,
+    # which replaces a link instead of following it) and never into a linked dir.
+    if [ -L "$dest" ]; then
+        config_warning "$dest is a symlink; not mirroring GnuPG material through it"
+        return 0
+    fi
     mkdir -p "$dest" 2>/dev/null || return 0
     chmod 700 "$dest" 2>/dev/null || true
 
@@ -220,14 +231,17 @@ ensure_gpg_mirror() {
     local f
     for f in pubring.kbx trustdb.gpg sshcontrol; do
         if [ -f "$host_gpg_home/$f" ]; then
-            install -m 600 "$host_gpg_home/$f" "$dest/$f" 2>/dev/null ||
-                cp "$host_gpg_home/$f" "$dest/$f" 2>/dev/null || true
+            _mirror_copy "$host_gpg_home/$f" "$dest/$f"
         fi
     done
     if [ -f "$host_gpg_home/public-keys.d/pubring.db" ]; then
+        if [ -L "$dest/public-keys.d" ]; then
+            rm -f "$dest/public-keys.d" 2>/dev/null || true
+        fi
         mkdir -p "$dest/public-keys.d" 2>/dev/null || true
-        install -m 600 "$host_gpg_home/public-keys.d/pubring.db" "$dest/public-keys.d/pubring.db" 2>/dev/null ||
-            cp "$host_gpg_home/public-keys.d/pubring.db" "$dest/public-keys.d/pubring.db" 2>/dev/null || true
+        if [ -d "$dest/public-keys.d" ] && [ ! -L "$dest/public-keys.d" ]; then
+            _mirror_copy "$host_gpg_home/public-keys.d/pubring.db" "$dest/public-keys.d/pubring.db"
+        fi
     fi
 
     # Mirror the config verbatim, including `use-keyboxd`: on such hosts GnuPG
@@ -235,24 +249,19 @@ ensure_gpg_mirror() {
     # container must run keyboxd to read it. entrypoint.sh launches it at boot;
     # `no-autostart` (below) still prevents a keyless local gpg-agent. Stale
     # mirrored config is removed when the host has none.
+    # Never let the container's gpg auto-start a keyless local agent: the real
+    # agent is the host's, reached through the forwarded socket. gpg.conf is
+    # always written (the host's, or an empty one) with `no-autostart` ensured.
     local conf
     for conf in gpg.conf common.conf; do
         if [ -f "$host_gpg_home/$conf" ]; then
-            install -m 600 "$host_gpg_home/$conf" "$dest/$conf" 2>/dev/null ||
-                cp "$host_gpg_home/$conf" "$dest/$conf" 2>/dev/null || true
+            _mirror_copy "$host_gpg_home/$conf" "$dest/$conf"
+        elif [ "$conf" = gpg.conf ]; then
+            _mirror_copy /dev/null "$dest/$conf"
         else
             rm -f "$dest/$conf" 2>/dev/null || true
         fi
     done
-
-    # Never let the container's gpg auto-start a keyless local agent: the real
-    # agent is the host's, reached through the forwarded socket.
-    if [ -f "$dest/gpg.conf" ]; then
-        grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$dest/gpg.conf" 2>/dev/null ||
-            echo "no-autostart" >>"$dest/gpg.conf" 2>/dev/null || true
-    else
-        echo "no-autostart" >"$dest/gpg.conf" 2>/dev/null || true
-    fi
 
     # Without a public keyring gpg cannot build a signature even when the agent
     # socket is forwarded: warn instead of failing silently later.
@@ -275,33 +284,80 @@ ensure_gpg_mirror() {
     rm -f "$dest/S.keyboxd" "$dest/S.keyboxd.lock" 2>/dev/null || true
 }
 
-# True when GPG_RELAY_DIR is a safe, non-root location to manage relays in.
+# Copy a host file into the GnuPG mirror without following anything planted at
+# the destination: write a private temp file next to it, then rename it over
+# the destination (a rename replaces a symlink, it never writes through it).
+# gpg.conf additionally gets `no-autostart`.
+# Usage: _mirror_copy <src> <dest>
+_mirror_copy() {
+    local src="$1" dst="$2" tmp
+    tmp=$(mktemp "$(dirname "$dst")/.mirror.XXXXXX" 2>/dev/null) || return 0
+    if ! cat "$src" >"$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 0
+    fi
+    if [ "$(basename "$dst")" = gpg.conf ] &&
+        ! grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$tmp" 2>/dev/null; then
+        echo "no-autostart" >>"$tmp"
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$dst" 2>/dev/null || rm -f "$tmp"
+}
+
+# True when GPG_RELAY_DIR is a safe location to manage relays in: inside the
+# wrapper's config dir (anywhere in test mode, where tests use a scratch dir).
 # Usage: relay_dir_ok && ...
 relay_dir_ok() {
-    [ -n "$GPG_RELAY_DIR" ] || return 1
     case "$GPG_RELAY_DIR" in
     / | "") return 1 ;;
+    "$CONFIG_DIR"/*) return 0 ;;
     esac
-    case "$GPG_RELAY_DIR" in
-    "$CONFIG_DIR"/* | "$HOME"/*) return 0 ;;
-    esac
-    return 1
+    [ "${PI_DOCKERIZED_TEST:-}" = 1 ]
+}
+
+# True when a directory is one start_gpg_relay created: named after a PID and
+# holding nothing but its `pid` file and `relay.sock`. Anything else is left
+# alone, so a misconfigured relay dir can never cost unrelated files.
+# Usage: is_relay_entry <dir>
+is_relay_entry() {
+    local d="$1" f
+    [ -d "$d" ] && [ ! -L "$d" ] || return 1
+    [[ "$(basename "$d")" =~ ^[0-9]+$ ]] || return 1
+    for f in "$d"/* "$d"/.[!.]*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        case "$(basename "$f")" in
+        pid | relay.sock) ;;
+        *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+# Remove one relay directory start_gpg_relay created: its two files, then the
+# directory itself (never a recursive delete).
+# Usage: remove_relay_entry <dir>
+remove_relay_entry() {
+    local d="$1"
+    is_relay_entry "$d" || return 0
+    rm -f "$d/pid" "$d/relay.sock" 2>/dev/null || true
+    rmdir "$d" 2>/dev/null || true
 }
 
 # Remove relay directories whose socat process is gone (crash, kill -9, stale
-# session). Runs before starting a new relay.
+# session). Runs before starting a new relay, only with GnuPG forwarding on.
 # Usage: cleanup_stale_relays
 cleanup_stale_relays() {
+    [ "$GPG_AGENT_SUPPORT" = true ] || return 0
     relay_dir_ok || return 0
-    [ -d "$GPG_RELAY_DIR" ] || return 0
+    [ -d "$GPG_RELAY_DIR" ] && [ ! -L "$GPG_RELAY_DIR" ] || return 0
     local d pid
     for d in "$GPG_RELAY_DIR"/*; do
-        [ -d "$d" ] || continue
+        is_relay_entry "$d" || continue
         pid=$(cat "$d/pid" 2>/dev/null || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             continue
         fi
-        rm -rf "$d" 2>/dev/null || true
+        remove_relay_entry "$d"
     done
 }
 
@@ -356,7 +412,7 @@ start_gpg_relay() {
     done
 
     kill "$pid" 2>/dev/null || true
-    rm -rf "$dir" 2>/dev/null || true
+    remove_relay_entry "$dir"
     return 1
 }
 
@@ -375,5 +431,5 @@ stop_gpg_relay() {
     local pid
     pid=$(cat "$dir/pid" 2>/dev/null || true)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -rf "$dir" 2>/dev/null || true
+    remove_relay_entry "$dir"
 }

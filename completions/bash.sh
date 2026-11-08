@@ -109,7 +109,7 @@ _pi_dockerized() {
         return 0
         ;;
     pull)
-        mapfile -t COMPREPLY < <(compgen -W "--no-verify" -- "${cur}")
+        mapfile -t COMPREPLY < <(compgen -W "--no-verify --allow-downgrade" -- "${cur}")
         return 0
         ;;
     install)
@@ -117,7 +117,7 @@ _pi_dockerized() {
         return 0
         ;;
     uninstall)
-        mapfile -t COMPREPLY < <(compgen -W "--yes --image --purge-config" -- "${cur}")
+        mapfile -t COMPREPLY < <(compgen -W "--yes --image --purge-config --all-profiles" -- "${cur}")
         return 0
         ;;
     stop)
