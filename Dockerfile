@@ -24,7 +24,7 @@ ARG UV_VERSION=0.13.6
 # floats inside the major so security fixes are picked up on rebuild.
 ARG NODE_VERSION=24
 # Pi CLI release; override with --build-arg PI_VERSION=x.y.z
-ARG PI_VERSION=v1.4.0
+ARG PI_VERSION=v1.5.2
 # qmd (on-device markdown search) release
 # renovate: datasource=npm depName=@tobilu/qmd
 ARG QMD_VERSION=2.8.3
@@ -187,7 +187,7 @@ RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1
 
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
-# ARG PI_VERSION pins the release (default v1.4.0).
+# ARG PI_VERSION pins the release (default v1.5.2).
 ARG PI_BUILD_TIME=0
 RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1000 \
     pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@earendil-works/pi-coding-agent && pi --version

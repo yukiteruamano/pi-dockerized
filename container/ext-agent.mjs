@@ -43,8 +43,9 @@ export const SECURITY_KEYS = [
 // Keys a host-written settings.json may carry besides the security keys: user
 // preferences only. Left out on purpose: packages, extensions, skills, prompts
 // and themes (they load code or paths), externalEditor, shellPath,
-// shellCommandPrefix and npmCommand (they run commands), httpProxy (routes
-// traffic), enableAnalytics and trackingId (telemetry), deviceId (identity).
+// shellCommandPrefix, npmCommand and selfUpdateCommand (they run commands),
+// httpProxy (routes traffic), enableAnalytics and trackingId (telemetry),
+// deviceId (identity).
 export const PREFERENCE_KEYS = [
   "$schema",
   "defaultThinkingLevel",
@@ -88,11 +89,13 @@ export const PREFERENCE_KEYS = [
 
 // Keys the packages file (written by `pi install`, and by any install script
 // the package runs) may never carry: they run commands, load code from a path
-// or route traffic. `pi install` itself only writes `packages`.
+// or route traffic. `pi install` itself only writes `packages`. selfUpdateCommand
+// matters because `extensions update` runs `pi update`, which executes it.
 export const PACKAGE_DENIED_KEYS = [
   "shellPath",
   "shellCommandPrefix",
   "npmCommand",
+  "selfUpdateCommand",
   "externalEditor",
   "httpProxy",
   "extensions",

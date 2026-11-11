@@ -461,7 +461,7 @@ assert_eq "$(cat "$TMP/victim-file")" "untouched" "the mirror must not write thr
 assert_eq "$(cat "$PI_HOME/.gnupg/public-keys.d/pubring.db")" "db" "the keyboxd database must be mirrored"
 
 # --- Env file: dangerous keys and a symlinked config dir --------------------------------------
-for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH; do
+for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH PI_SELF_UPDATE_COMMAND; do
     printf 'ANTHROPIC_API_KEY=x\n%s=y\n' "$bad_key" >"$env_ok"
     (
         ENV_FILE="$env_ok"

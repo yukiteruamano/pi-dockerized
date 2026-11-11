@@ -226,14 +226,16 @@ build_env_args() {
 }
 
 # Variables the secrets file must not set: they load code into every process
-# (LD_*, NODE_OPTIONS, BASH_ENV), move the agent's home or tools, or override
+# (LD_*, NODE_OPTIONS, BASH_ENV), move the agent's home or tools, run a command
+# from `pi update` (PI_SELF_UPDATE_COMMAND), or override
 # what the wrapper tells the guard and the entrypoint (PI_DOCKERIZED_*). Docker
 # lets `-e` win over --env-file today, but the file is not the place for them.
 # Usage: env_key_forbidden <KEY>
 env_key_forbidden() {
     case "$1" in
     LD_PRELOAD | LD_LIBRARY_PATH | LD_AUDIT | NODE_OPTIONS | NODE_PATH | BASH_ENV | ENV | \
-        PATH | HOME | PI_CODING_AGENT_DIR | PI_DOCKERIZED_* | PI_SKIP_VERSION_CHECK | PI_TELEMETRY)
+        PATH | HOME | PI_CODING_AGENT_DIR | PI_DOCKERIZED_* | PI_SKIP_VERSION_CHECK | PI_TELEMETRY | \
+        PI_SELF_UPDATE_COMMAND)
         return 0
         ;;
     esac

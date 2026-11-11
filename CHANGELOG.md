@@ -108,6 +108,11 @@ Fixes from a full audit; every confirmed bypass has a regression test.
   (exit 127). `PNPM_CONFIG_VIRTUAL_STORE_TYPE=project` keeps global installs
   under `$PNPM_HOME/global`, which is part of the image, while the cache mount
   still avoids re-downloading.
+- Pi 1.5.2 (from 1.4.0). Pi 1.5.0 added `selfUpdateCommand` and
+  `PI_SELF_UPDATE_COMMAND`, a command `pi update` runs; `extensions update`
+  runs `pi update`, so the key is refused in the Pi Packages `settings.json`
+  (dropped by `enforce`, fails the entrypoint check) and the variable in the
+  secrets file. Sessions still block `pi update` through the guard.
 
 ### Security (guard 6)
 

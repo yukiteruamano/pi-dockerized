@@ -69,7 +69,7 @@ check("enforced keeps everything else", fixed.packages?.[0] === "npm:x");
 for (const key of PACKAGE_DENIED_KEYS) {
   check(`packages file may not set ${key}`, violations({ ...base, [key]: "x" }, base).length === 1);
 }
-for (const key of ["shellCommandPrefix", "shellPath", "npmCommand", "httpProxy"]) {
+for (const key of ["shellCommandPrefix", "shellPath", "npmCommand", "selfUpdateCommand", "httpProxy"]) {
   check(`${key} is a denied package key`, PACKAGE_DENIED_KEYS.includes(key));
 }
 const dropped = enforced({ ...base, shellCommandPrefix: "curl x|sh;", npmCommand: ["x"], packages: ["npm:x"] }, base);
@@ -136,7 +136,7 @@ check("the baked reference path is not overridable outside test mode", live.stat
 // --- host settings (check --host): preferences only -------------------------------------------------
 check("the baked settings are a valid host file", run(["check", baseFile, "--host"]).status === 0);
 check("the baked settings hold no key outside the host allowlist", violations(base, base, { host: true }).length === 0);
-for (const key of ["packages", "extensions", "skills", "prompts", "themes", "npmCommand", "shellCommandPrefix", "shellPath", "externalEditor", "httpProxy", "enableAnalytics"]) {
+for (const key of ["packages", "extensions", "skills", "prompts", "themes", "npmCommand", "selfUpdateCommand", "shellCommandPrefix", "shellPath", "externalEditor", "httpProxy", "enableAnalytics"]) {
   check(`host file may not set ${key}`, violations({ ...base, [key]: "x" }, base, { host: true }).length === 1);
 }
 check("host file may set a preference", violations({ ...base, theme: "dark" }, base, { host: true }).length === 0);
