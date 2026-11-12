@@ -25,6 +25,24 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   rules accept host allow rules (`pi-policy/*`) and which are built-in
   backstops (`backstop/*`).
 
+### Fixed (concurrent sessions with SSH/GnuPG forwarding)
+
+- **GnuPG:** every session now mirrors the public keyring into its own
+  directory (`home/.gnupg-sessions/<wrapper PID>/`, removed when it ends)
+  instead of one shared `home/.gnupg`. Starting a second session used to
+  delete the running session's agent link and keyboxd socket in the shared
+  mirror (signing broke there, transiently or for good), and lock files from
+  one container could block gpg in another. Mirrors of dead sessions are
+  cleaned at the next start. The old `home/.gnupg` is no longer used and can
+  be deleted.
+- **Relay:** stale-relay cleanup judged an entry by its socat PID, which is
+  written after the entry is created, so a session starting at the same time
+  could delete another's fresh relay socket. An entry is now live while the
+  wrapper that created it or its socat runs; a leftover entry with the same
+  PID (reboot) is replaced instead of making socat fail.
+- SSH needed no change: the agent socket is shared as-is (ssh-agent serves
+  concurrent clients) and `~/.ssh/config`/`known_hosts` are read-only.
+
 ### Changed (profile layout — automatic migration)
 
 - **Every profile now lives in `~/.config/pi-dockerized/profiles/<name>/`,

@@ -476,21 +476,46 @@ PI_DOCKERIZED_TEST=1 GPG_RELAY_DIR="$RELAY_TEST" GPG_AGENT_SUPPORT=true cleanup_
 [ -d "$RELAY_TEST/projA/src" ] || fail "relay cleanup must never delete unrelated directories"
 [ ! -e "$RELAY_TEST/99999999" ] || fail "relay cleanup must remove a stale relay entry"
 
-# --- GnuPG mirror: no host writes through planted symlinks ---------------------------------
+# --- Concurrent sessions: nothing of a running session is touched by another ----------------
+# A real background process stands in for a second wrapper that is running.
+sleep 60 &
+OTHER_WRAPPER=$!
+# A relay that is still starting (socat PID not written yet) must survive.
+mkdir -p "$RELAY_TEST/$OTHER_WRAPPER"
+PI_DOCKERIZED_TEST=1 GPG_RELAY_DIR="$RELAY_TEST" GPG_AGENT_SUPPORT=true cleanup_stale_relays
+[ -d "$RELAY_TEST/$OTHER_WRAPPER" ] || fail "relay cleanup must keep the entry of a running wrapper"
+
 HOST_GNUPG="$TMP/host-gnupg"
-mkdir -p "$HOST_GNUPG/public-keys.d" "$PI_HOME/.gnupg"
+mkdir -p "$HOST_GNUPG/public-keys.d"
 printf 'keyring\n' >"$HOST_GNUPG/pubring.kbx"
 printf 'db\n' >"$HOST_GNUPG/public-keys.d/pubring.db"
-printf 'untouched\n' >"$TMP/victim-file"
-mkdir -p "$TMP/victim-dir"
-ln -sfn "$TMP/victim-file" "$PI_HOME/.gnupg/gpg.conf"
-ln -sfn "$TMP/victim-file" "$PI_HOME/.gnupg/pubring.kbx"
-ln -sfn "$TMP/victim-dir" "$PI_HOME/.gnupg/public-keys.d"
+MIRRORS="$(gpg_mirror_root)"
+# The other session's mirror, with what its container wrote into it.
+mkdir -p "$MIRRORS/$OTHER_WRAPPER" "$MIRRORS/99999998"
+: >"$MIRRORS/$OTHER_WRAPPER/S.keyboxd"
+ln -sfn /home/coder/.gnupg-agent/S.gpg-agent "$MIRRORS/$OTHER_WRAPPER/S.gpg-agent"
+: >"$MIRRORS/$OTHER_WRAPPER/pubring.kbx.lock"
+cleanup_stale_gpg_mirrors
 GNUPGHOME="$HOST_GNUPG" ensure_gpg_mirror >/dev/null 2>&1
-assert_eq "$(cat "$TMP/victim-file")" "untouched" "the mirror must not write through a planted symlink"
-[ ! -e "$TMP/victim-dir/pubring.db" ] || fail "the mirror must not write into a planted directory symlink"
-[ ! -L "$PI_HOME/.gnupg/gpg.conf" ] && grep -qx 'no-autostart' "$PI_HOME/.gnupg/gpg.conf" || fail "gpg.conf must be a real file with no-autostart"
-assert_eq "$(cat "$PI_HOME/.gnupg/public-keys.d/pubring.db")" "db" "the keyboxd database must be mirrored"
+[ -e "$MIRRORS/$OTHER_WRAPPER/S.keyboxd" ] && [ -L "$MIRRORS/$OTHER_WRAPPER/S.gpg-agent" ] &&
+    [ -e "$MIRRORS/$OTHER_WRAPPER/pubring.kbx.lock" ] ||
+    fail "starting a session must not touch the keyboxd socket, agent link or locks of a running one"
+[ ! -e "$MIRRORS/99999998" ] || fail "the mirror of a dead session must be cleaned up"
+assert_eq "$GPG_MIRROR_DIR" "$MIRRORS/$$" "each session mirrors into its own directory"
+[ ! -L "$GPG_MIRROR_DIR/gpg.conf" ] && grep -qx 'no-autostart' "$GPG_MIRROR_DIR/gpg.conf" || fail "gpg.conf must be a real file with no-autostart"
+assert_eq "$(cat "$GPG_MIRROR_DIR/public-keys.d/pubring.db")" "db" "the keyboxd database must be mirrored"
+assert_eq "$(cat "$GPG_MIRROR_DIR/pubring.kbx")" "keyring" "the public keyring must be mirrored"
+# A second call in the same process starts from a fresh directory.
+: >"$GPG_MIRROR_DIR/S.keyboxd"
+GNUPGHOME="$HOST_GNUPG" ensure_gpg_mirror >/dev/null 2>&1
+[ ! -e "$GPG_MIRROR_DIR/S.keyboxd" ] || fail "a session's mirror must start empty"
+remove_gpg_mirror
+[ ! -e "$MIRRORS/$$" ] || fail "a session must remove its mirror when it ends"
+[ -d "$MIRRORS/$OTHER_WRAPPER" ] || fail "ending a session must keep the other session's mirror"
+kill "$OTHER_WRAPPER" 2>/dev/null
+wait "$OTHER_WRAPPER" 2>/dev/null
+cleanup_stale_gpg_mirrors
+[ ! -e "$MIRRORS/$OTHER_WRAPPER" ] || fail "the mirror is cleaned once its wrapper is gone"
 
 # --- Env file: dangerous keys and a symlinked config dir --------------------------------------
 for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH PI_SELF_UPDATE_COMMAND; do

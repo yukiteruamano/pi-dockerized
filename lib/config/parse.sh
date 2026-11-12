@@ -98,6 +98,7 @@ build_mount_args() {
     ensure_ssh_agent_ready
     ensure_gpg_agent_ready
     cleanup_stale_relays
+    cleanup_stale_gpg_mirrors
 
     local i
     for i in "${!CUSTOM_MOUNTS[@]}"; do
@@ -134,10 +135,10 @@ build_mount_args() {
     if [ "$GPG_AGENT_SUPPORT" = true ]; then
         GPG_SOCKET=""
         ensure_gpg_mirror
-        if [ -d "$PI_HOME/.gnupg" ]; then
-            mount_bind "$PI_HOME/.gnupg" "/home/coder/.gnupg"
+        if [ -n "$GPG_MIRROR_DIR" ]; then
+            mount_bind "$GPG_MIRROR_DIR" "/home/coder/.gnupg"
         else
-            config_warning "GnuPG agent support enabled but $PI_HOME/.gnupg could not be prepared"
+            config_warning "GnuPG agent support enabled but the GnuPG mirror under $(gpg_mirror_root) could not be prepared"
         fi
 
         local main_socket extra_socket gpg_socket
@@ -178,11 +179,11 @@ build_mount_args() {
             # mounted *inside* another bind mount (the mirror) can be shadowed by
             # Docker, which left the agent socket invisible to gpg.
             mount_bind "$mount_socket" "/home/coder/.gnupg-agent/S.gpg-agent"
-            # Expose it to gpg through GNUPGHOME with a symlink (gpg follows it).
-            # ensure_gpg_mirror clears any previous link before each run.
-            if [ -d "$PI_HOME/.gnupg" ]; then
-                ln -sfn "/home/coder/.gnupg-agent/S.gpg-agent" "$PI_HOME/.gnupg/S.gpg-agent" 2>/dev/null ||
-                    config_warning "Could not create the GnuPG agent socket symlink in $PI_HOME/.gnupg"
+            # Expose it to gpg through GNUPGHOME with a symlink (gpg follows it),
+            # in this session's own mirror.
+            if [ -n "$GPG_MIRROR_DIR" ]; then
+                ln -sfn "/home/coder/.gnupg-agent/S.gpg-agent" "$GPG_MIRROR_DIR/S.gpg-agent" 2>/dev/null ||
+                    config_warning "Could not create the GnuPG agent socket symlink in $GPG_MIRROR_DIR"
             fi
         else
             config_warning "GnuPG agent support enabled but no usable agent socket (extra socket missing and main fallback disabled)"
@@ -274,7 +275,10 @@ build_env_file_args() {
     local env_file
     env_file=$(resolve_env_file "$ENV_FILE")
     if ! env_file_in_profile "$env_file"; then
-        config_error "Refusing env file outside this profile's directory ($CONFIG_DIR): it could be mounted into the container or belong to another profile."
+        config_error "Refusing env file $env_file (setting.env_file=$ENV_FILE): it is outside this profile's directory ($CONFIG_DIR), so it could be mounted into the container or belong to another profile."
+        if [ -f "$CONFIG_DIR/env" ]; then
+            config_info "This profile has its own $CONFIG_DIR/env: '$0 profile fix ${PI_PROFILE:-default}' points setting.env_file at it."
+        fi
         exit 1
     fi
 

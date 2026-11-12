@@ -812,6 +812,7 @@ assert_contains "$out" "profile list" "config profiles points at the profile com
 pr --profile default config set env_file "$WORK/env" >/dev/null 2>&1 || fail "config set env_file in the default profile"
 out="$(DRY_RUN=true PATH="$FAKE_BIN:$PATH" pr run "$PROJECT" 2>&1)" && fail "the default profile must refuse a named profile's secrets file"
 assert_contains "$out" "another profile" "the refusal explains the secrets mix-up"
+assert_contains "$out" "setting.env_file=$WORK/env" "the refusal shows the offending value"
 pr --profile default config set env_file "" >/dev/null 2>&1
 
 # default_profile is routing: `config set` writes it to the root config from

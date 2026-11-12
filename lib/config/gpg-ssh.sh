@@ -201,29 +201,80 @@ ensure_ssh_agent_ready() {
     return 0
 }
 
-# Mirror the host's *public* GnuPG material into $PI_HOME/.gnupg so the
-# container can use the host gpg-agent (forwarded via its socket) without ever
-# receiving the private keys. Only public files are copied; private-keys-v1.d,
-# the agent sockets and random_seed are deliberately excluded.
+# Parent of the per-session GnuPG mirrors. Each session gets its own mirror
+# (named after the wrapper's PID): the container writes into it (keyboxd
+# socket, lock files, trustdb), so a shared one let a starting session delete
+# the agent link and keyboxd socket of a running one, and left cross-container
+# locks behind.
+gpg_mirror_root() {
+    printf '%s' "$PI_HOME/.gnupg-sessions"
+}
+
+# True when a PID-named session entry (mirror or relay) belongs to a wrapper
+# that is still running. The wrapper exists before it creates the entry, so a
+# session that is still starting is never mistaken for a stale one.
+# Usage: session_entry_alive <dir>
+session_entry_alive() {
+    local pid
+    pid=$(basename "$1")
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Delete the mirrors of sessions whose wrapper is gone (crash, kill -9). Only
+# PID-named real directories under the mirror root are touched; rm does not
+# follow symlinks a session may have planted inside.
+# Usage: cleanup_stale_gpg_mirrors
+cleanup_stale_gpg_mirrors() {
+    local root d
+    root=$(gpg_mirror_root)
+    [ -d "$root" ] && [ ! -L "$root" ] || return 0
+    for d in "$root"/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] && [[ "$(basename "$d")" =~ ^[0-9]+$ ]] || continue
+        session_entry_alive "$d" && continue
+        rm -rf -- "$d"
+    done
+}
+
+# Remove this session's mirror (set by ensure_gpg_mirror) when it ends.
+# Usage: remove_gpg_mirror
+remove_gpg_mirror() {
+    case "$GPG_MIRROR_DIR" in
+    "$(gpg_mirror_root)"/[0-9]*) rm -rf -- "$GPG_MIRROR_DIR" ;;
+    esac
+    GPG_MIRROR_DIR=""
+}
+
+# Mirror the host's *public* GnuPG material into this session's own directory
+# (GPG_MIRROR_DIR) so the container can use the host gpg-agent (forwarded via
+# its socket) without ever receiving the private keys. Only public files are
+# copied; private-keys-v1.d, the agent sockets and random_seed are deliberately
+# excluded.
 # Usage: ensure_gpg_mirror
 ensure_gpg_mirror() {
     local host_gpg_home="${GNUPGHOME:-$HOME/.gnupg}"
-    local dest="$PI_HOME/.gnupg"
+    local root dest
+    root=$(gpg_mirror_root)
+    dest="$root/$$"
+    GPG_MIRROR_DIR=""
 
     if [ ! -d "$host_gpg_home" ]; then
         config_warning "GnuPG agent support enabled but no GnuPG home found at $host_gpg_home"
         return 0
     fi
-
-    # The mirror is mounted read-write, so a session can plant symlinks in it:
-    # every host-side write below goes through _mirror_copy (temp file + rename,
-    # which replaces a link instead of following it) and never into a linked dir.
-    if [ -L "$dest" ]; then
-        config_warning "$dest is a symlink; not mirroring GnuPG material through it"
+    if [ -L "$root" ]; then
+        config_warning "$root is a symlink; not mirroring GnuPG material through it"
         return 0
     fi
-    mkdir -p "$dest" 2>/dev/null || return 0
-    chmod 700 "$dest" 2>/dev/null || true
+    (umask 077 && mkdir -p "$root") 2>/dev/null || return 0
+    # Start from an empty directory: one left by an earlier process with the
+    # same PID (or an earlier call in this one) is stale.
+    rm -rf -- "$dest"
+    (umask 077 && mkdir "$dest") 2>/dev/null || return 0
+    GPG_MIRROR_DIR="$dest"
+
+    # Every host-side write happens here, into the fresh directory, before the
+    # container starts: nothing a session plants in its mirror (it is mounted
+    # read-write) can redirect them, and nothing stale needs clearing.
 
     # Public keyring (GnuPG 2.x keybox) plus its lock/trust files. With keyboxd
     # the database can also live under public-keys.d/, so mirror that too.
@@ -235,31 +286,23 @@ ensure_gpg_mirror() {
         fi
     done
     if [ -f "$host_gpg_home/public-keys.d/pubring.db" ]; then
-        if [ -L "$dest/public-keys.d" ]; then
-            rm -f "$dest/public-keys.d" 2>/dev/null || true
-        fi
-        mkdir -p "$dest/public-keys.d" 2>/dev/null || true
-        if [ -d "$dest/public-keys.d" ] && [ ! -L "$dest/public-keys.d" ]; then
+        (umask 077 && mkdir "$dest/public-keys.d") 2>/dev/null &&
             _mirror_copy "$host_gpg_home/public-keys.d/pubring.db" "$dest/public-keys.d/pubring.db"
-        fi
     fi
 
     # Mirror the config verbatim, including `use-keyboxd`: on such hosts GnuPG
     # keeps the public keyring in the keyboxd database (public-keys.d/), so the
-    # container must run keyboxd to read it. entrypoint.sh launches it at boot;
-    # `no-autostart` (below) still prevents a keyless local gpg-agent. Stale
-    # mirrored config is removed when the host has none.
-    # Never let the container's gpg auto-start a keyless local agent: the real
-    # agent is the host's, reached through the forwarded socket. gpg.conf is
-    # always written (the host's, or an empty one) with `no-autostart` ensured.
+    # container must run keyboxd to read it. entrypoint.sh launches it at boot,
+    # in this session's own mirror; `no-autostart` (below) still prevents a
+    # keyless local gpg-agent: the real agent is the host's, reached through the
+    # forwarded socket. gpg.conf is always written (the host's, or an empty one)
+    # with `no-autostart` ensured.
     local conf
     for conf in gpg.conf common.conf; do
         if [ -f "$host_gpg_home/$conf" ]; then
             _mirror_copy "$host_gpg_home/$conf" "$dest/$conf"
         elif [ "$conf" = gpg.conf ]; then
             _mirror_copy /dev/null "$dest/$conf"
-        else
-            rm -f "$dest/$conf" 2>/dev/null || true
         fi
     done
 
@@ -268,20 +311,6 @@ ensure_gpg_mirror() {
     if [ ! -f "$dest/pubring.kbx" ] && [ ! -f "$dest/public-keys.d/pubring.db" ]; then
         config_warning "No public GnuPG keyring found in $host_gpg_home (commit signing will not work)"
     fi
-
-    # Clear any stale agent entry from earlier versions: the socket is
-    # bind-mounted by the wrapper, never linked. A previous `-v` mount or a
-    # Docker run with a missing source can leave a directory here, which would
-    # block the socket mount and the real host agent.
-    if [ -d "$dest/S.gpg-agent" ] && [ ! -S "$dest/S.gpg-agent" ]; then
-        rmdir "$dest/S.gpg-agent" 2>/dev/null ||
-            config_warning "Stray directory at $dest/S.gpg-agent; remove it on the host before mounting the agent socket"
-    fi
-    rm -f "$dest/S.gpg-agent" 2>/dev/null || true
-
-    # Clear a stale keyboxd socket/lock from a previous run: the container starts
-    # a fresh keyboxd, and a dead socket file would otherwise confuse gpgconf.
-    rm -f "$dest/S.keyboxd" "$dest/S.keyboxd.lock" 2>/dev/null || true
 }
 
 # Copy a host file into the GnuPG mirror without following anything planted at
@@ -343,8 +372,11 @@ remove_relay_entry() {
     rmdir "$d" 2>/dev/null || true
 }
 
-# Remove relay directories whose socat process is gone (crash, kill -9, stale
-# session). Runs before starting a new relay, only with GnuPG forwarding on.
+# Remove relay directories of sessions that are gone (crash, kill -9). An
+# entry is live while the wrapper that created it (its name) or its socat is
+# running: judging by the socat PID alone deleted a concurrent session's relay
+# in the window before that PID was written. Runs before starting a new relay,
+# only with GnuPG forwarding on.
 # Usage: cleanup_stale_relays
 cleanup_stale_relays() {
     [ "$GPG_AGENT_SUPPORT" = true ] || return 0
@@ -353,6 +385,7 @@ cleanup_stale_relays() {
     local d pid
     for d in "$GPG_RELAY_DIR"/*; do
         is_relay_entry "$d" || continue
+        session_entry_alive "$d" && continue
         pid=$(cat "$d/pid" 2>/dev/null || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             continue
@@ -385,7 +418,8 @@ start_gpg_relay() {
     chmod 700 "$GPG_RELAY_DIR" 2>/dev/null || true
     # Keep the path short: Unix socket paths are limited to ~108 chars, and the
     # relay dir already nests under the wrapper config dir. The PID alone is
-    # unique per live process (stale dirs are purged before each start).
+    # unique per live process; an entry already carrying it is a stale one from
+    # an earlier process that had the same PID, so it is replaced.
     local dir sock pid i
     dir="$GPG_RELAY_DIR/$$"
     sock="$dir/relay.sock"
@@ -393,7 +427,8 @@ start_gpg_relay() {
         config_warning "GPG relay path too long for a Unix socket (${#sock} chars); skipping relay"
         return 1
     fi
-    mkdir -p "$dir" 2>/dev/null || return 1
+    remove_relay_entry "$dir"
+    mkdir "$dir" 2>/dev/null || return 1
     chmod 700 "$dir" 2>/dev/null || true
 
     # `exec` makes $! the relay process itself (not a wrapping bash), so

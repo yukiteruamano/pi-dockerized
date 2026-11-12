@@ -231,6 +231,11 @@ stderr so command output stays pipeable. Color codes are plain variables
 - `check_pi_state` / `sync_pi_state` — validate/repair host state (`config sync`).
 - GPG/SSH forwarding helpers: `ensure_gpg_mirror`,
   `resolve_gpg_agent_socket`/`_extra_socket`, `start_gpg_relay`/`stop_gpg_relay`.
+  Sessions run concurrently: anything a container writes to (the GnuPG mirror,
+  `GPG_MIRROR_DIR`) or the wrapper starts (the relay) is per session, named
+  after the wrapper's PID, removed by `_session_cleanup`, and treated as stale
+  only when that PID is gone (`session_entry_alive`). Never reintroduce shared
+  writable agent state.
 
 ### Config File Format
 
@@ -368,7 +373,7 @@ Host paths are relative to the profile directory (`profiles/<name>/`).
 | `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
 | `~/.composio/` | idem | rw | Composio CLI (custom mount) |
 | `/var/run/docker.sock` | idem | rw (opt-in) | Docker socket |
-| `home/.gnupg/` | `/home/coder/.gnupg/` | rw (opt-in) | Mirrored public GnuPG material |
+| `home/.gnupg-sessions/<pid>/` | `/home/coder/.gnupg/` | rw (opt-in) | This session's mirrored public GnuPG material (removed when it ends) |
 
 `--untrusted` mounts only the project, `skills/` and `settings.json` (ro),
 `prompts/`/`themes/` (**ro**), `home/.pi/agent/sessions-untrusted/` (as

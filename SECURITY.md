@@ -68,6 +68,13 @@ baked security extension (`extensions/pi-security-guard/`).
 - **GPG socket relay.** Setups that cannot bind a socket under `/run/user/<uid>/
   gnupg` relay the restricted `S.gpg-agent.extra` through a socket on a normal
   filesystem (`socat`, under the wrapper config dir) for the session.
+- **Concurrent sessions.** Each session gets its own relay and its own public
+  GnuPG mirror (`home/.gnupg-sessions/<wrapper PID>/`), removed when it ends:
+  the container writes its keyboxd socket, agent link and lock files there, so
+  a starting session can no longer clear those of a running one. Stale entries
+  are cleaned only once the wrapper that created them is gone. The SSH agent
+  socket is shared as-is (the agent serves many clients); `~/.ssh/config` and
+  `known_hosts` are read-only.
 - **The guard is baked; extensions are not.** Editing the guard has no effect
   until `pi-dockerized build` (or `update`). Extensions live on the host and
   apply to the next session, no rebuild.

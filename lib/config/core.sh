@@ -164,6 +164,7 @@ GPG_ALLOW_MAIN_SOCKET=false        # Allow fallback to the full-control agent so
 GPG_AUTOSTART_AGENT=true           # Launch the host gpg-agent when its socket is missing
 GPG_RELAY=true                     # Relay the agent socket through a normal-fs socket
 GPG_RELAY_SOCKET=""                # Active relay socket for the current session
+GPG_MIRROR_DIR=""                  # This session's public GnuPG mirror (set by ensure_gpg_mirror)
 DOCKER_SOCKET=false                # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
 NETWORK="host"                     # Container network: host (default, simple) | bridge (more isolated)
 SECURITY_POLICY="balanced"         # Security policy mode: strict | balanced | off

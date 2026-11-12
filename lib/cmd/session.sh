@@ -148,6 +148,7 @@ build_session_cmd() {
 _session_cleanup() {
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
+    remove_gpg_mirror
 }
 
 # A signal (including the terminal closing) must not leave the container, and
