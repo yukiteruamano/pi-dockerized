@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# config.sh - the `config` command (show/edit/get/set/path/sync/pi/allow)
+# config.sh - the `config` command (show/edit/get/set/path/sync/pi/allow/trust)
 # and `audit`. Everything here is host-side: no Docker daemon needed.
 # Sourced by bin/pi-dockerized (not executable directly).
 # NOTE: no "set -e" — library file; callers control their own error handling.
@@ -17,17 +17,18 @@ edit_file() {
 }
 
 # Print the files the guard reads from the host, creating nothing.
-# Usage: config_pi_file <mcp|allow>
+# Usage: config_pi_file <mcp|allow|trust>
 _config_pi_file() {
     case "$1" in
     mcp) echo "$PI_HOME/.pi/agent/mcp.json" ;;
     allow) echo "$PI_HOME/.pi/agent/allow.json" ;;
+    trust) echo "$PI_HOME/.pi/agent/trust.json" ;;
     esac
 }
 
-# Handle `config pi|allow [path|edit]`: the Pi agent files mounted read-only
-# into the container, edited here on the host.
-# Usage: config_agent_file <mcp|allow> [path|edit]
+# Handle `config pi|allow|trust [path|edit]`: the Pi agent files mounted
+# read-only into the container, edited here on the host.
+# Usage: config_agent_file <mcp|allow|trust> [path|edit]
 config_agent_file() {
     local kind="$1" action="${2:-path}" file
     file=$(_config_pi_file "$kind")
@@ -113,13 +114,16 @@ show_config() {
     allow)
         config_agent_file allow "${1:-path}"
         ;;
+    trust)
+        config_agent_file trust "${1:-path}"
+        ;;
     profiles)
         print_error "Profiles moved to their own command: '$0 profile ${1:-list}'."
         exit "$E_USAGE"
         ;;
     *)
         print_error "Unknown config subcommand: $subcommand"
-        echo "Usage: $0 config [show|edit|get|set|path|sync|pi|allow]" >&2
+        echo "Usage: $0 config [show|edit|get|set|path|sync|pi|allow|trust]" >&2
         exit 1
         ;;
     esac

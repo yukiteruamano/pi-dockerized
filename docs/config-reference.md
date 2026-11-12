@@ -14,10 +14,11 @@ with `pi-dockerized config set <key> <value>`, inspect with
 | `gpg_autostart_agent` | bool | `true` | Launch the host `gpg-agent` when its socket is missing |
 | `gpg_relay` | bool | `true` | Relay sockets from `/run/*` tmpfs through a normal-filesystem socket Docker can bind |
 | `docker_socket` | bool | `false` | Mount `/var/run/docker.sock` (root-equivalent on the host; rebuild the image after enabling) |
-| `network` | `host`\|`bridge` | `host` | Container network; `--untrusted` forces `bridge` |
+| `git_readonly` | bool | `true` | Mount the project's `.git` and `.gitmodules` read-only (Git on the host runs hooks and config from them). Commit, stash and fetch from the host; `--untrusted` forces it on |
+| `network` | `host`\|`bridge` | `host` | Container network; `--untrusted` forces `bridge`. `host` also shares abstract Unix sockets (X11, D-Bus) with the host |
 | `security_policy` | `strict`\|`balanced`\|`off` | `balanced` | Guard pattern sets; backstops stay active even when `off` |
 | `allowed_tools` | list | empty | Strict-mode allowlist: `name`, `name:*`, or `name:scope+scope` (comma-separated) |
-| `verify_updates` | bool | `false` | `update`/`upgrade` require a signed upstream head |
+| `verify_updates` | bool | `true` | `update`/`upgrade` require an upstream head signed by a key in `.github/release-signers` (import it into your keyring first) |
 | `memory` | size | empty | Container memory limit, e.g. `4g` |
 | `cpus` | number | empty | Container CPU limit, e.g. `2` |
 | `pids_limit` | number\|`unlimited` | `4096` | Container process cap (`docker --pids-limit`); contains fork bombs at the kernel |

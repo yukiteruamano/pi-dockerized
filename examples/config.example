@@ -72,6 +72,12 @@
 # The image only contains the Docker CLI when it was built with this on, so
 # rebuild afterwards ('pi-dockerized build'); the wrapper warns if it is missing.
 
+# Mount the project's .git and .gitmodules read-only (default: true). Git on the
+# host runs hooks and config from .git, so a writable one lets a session plant
+# code that runs outside the sandbox. Commit, stash and fetch from the host.
+#
+# setting.git_readonly=true
+
 # Security policy mode enforced by the baked security-guard extension.
 #   strict   = every vendored policy pattern (upstream opencode-policy), and tools outside Pi's
 #              built-in set (MCP tools, other extensions) are refused unless
@@ -93,7 +99,7 @@
 # Require `update`/`upgrade` to verify the signature of the upstream head
 # (git verify-commit) before pulling. Needs the maintainer's key in GnuPG.
 #
-# setting.verify_updates=false
+# setting.verify_updates=true
 
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g

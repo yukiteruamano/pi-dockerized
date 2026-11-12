@@ -24,14 +24,17 @@ No package manager files and no build step for the wrapper itself.
   (constants, profiles, logging `print_*`, path helpers), `mount-policy.sh`
   (what may be mounted and where), `state.sh` (host-state seeding/sync/perms),
   `gpg-ssh.sh` (agent forwarding), `docker-args.sh` (docker run args, incl.
-  `build_pi_args`), `settings.sh` (config file I/O, `config get/set`),
+  `build_pi_args`), `config-file.sh` (the annotated file a fresh profile
+  starts from), `settings.sh` (config file I/O, `config get/set`),
   `layout.sh` (root routing config and the migration from the old layout),
   `parse.sh` (mounts/env args), `overrides.sh` (`--untrusted`/`--policy`/
   `--network` session flags) and `prompts.sh` (interactive setup, output).
   **Not executable directly.** Keep each module under ~500 lines.
 - `lib/cmd/` — Command modules sourced by the wrapper: `session.sh` (run/exec/
   shell/auth/doctor/…: `prepare_session` → `build_session_cmd` →
-  `launch_session`), `image.sh` (build/pull/rollback/clean/version), `update.sh`,
+  `launch_session`), `sessions.sh` (`run --list`, `ps`, `stop`: session
+  inventory, no container), `extensions.sh` (Pi Packages), `image.sh`
+  (build/pull/rollback/clean/version), `update.sh`,
   `config.sh` (config + audit), `profile.sh` (every named-profile operation:
   list/create/remove/show/path/check/fix/run) and `help.sh`. **Not executable
   directly.**
@@ -52,8 +55,9 @@ No package manager files and no build step for the wrapper itself.
   `container/lock-check.sh` — asserts the guard is root-owned and out of the
   session's reach (all baked root-owned).
 - `extensions/pi-security-guard/` — Security extension (`index.ts`,
-  `policy.mjs`, `backstops.mjs`, `shell.mjs`, `selftest.mjs`,
-  `balanced-excluded.json`, `policies/`).
+  `policy.mjs`, `backstops.mjs`, `shell.mjs`, `scope.mjs` (strict-mode
+  `allowed_tools` scopes), `selftest.mjs`, `balanced-excluded.json`,
+  `policies/`).
 - `policies/` — vendored policy pattern sets (upstream `opencode-policy` source for the guard);
   `scripts/refresh-policies.sh` refreshes them.
 - `tests/` — `security-guard.test.mjs`, `guard-extension.test.mjs`,
@@ -72,7 +76,7 @@ bin/pi-dockerized build                       # Build Docker image (bakes extens
 bin/pi-dockerized run [DIR]                   # Run Pi (default: current dir)
 bin/pi-dockerized auth                        # Check provider credentials
 bin/pi-dockerized upgrade --check             # Check for updates from GitHub
-bin/pi-dockerized update [--check|--yes|--no-build|--verify|--pi-version X]
+bin/pi-dockerized update [--check|--yes|--no-build|--[no-]verify|--pi-version X]
 pi-dockerized models                          # List models (pi --list-models)
 pi-dockerized exec [FLAGS] MSG|-              # Non-interactive prompt (pi --print)
 pi-dockerized shell [FLAGS] [DIR]             # Shell inside the sandbox
@@ -89,7 +93,7 @@ pi-dockerized config show|edit|get|set|path|sync            # Wrapper INI config
 pi-dockerized profile [list|create NAME|remove NAME [--yes]]  # Named profiles
 pi-dockerized profile show|path|check|fix [NAME]  # Inspect, audit, repair one
 pi-dockerized profile run NAME [RUN ARGS]         # = --profile NAME run
-pi-dockerized config pi|allow [path|edit]     # mcp.json / guard allow.json
+pi-dockerized config pi|allow|trust [path|edit]  # mcp.json / guard allow.json / trust.json
 pi-dockerized uninstall [--image] [--purge-config [--all-profiles]]
 pi-dockerized clean                           # Remove Docker image (all tags)
 pi-dockerized --profile NAME <command>        # Separate config/keys/state
@@ -116,9 +120,13 @@ CI (`.github/workflows/ci.yml`) runs `bash -n`, `shellcheck`, `hadolint`, the
 guard tests (Node 22 and 24), both wrapper contract tests and, on pull requests
 and pushes to master, the GUARD_VERSION-increase check. `image.yml` smoke-tests
 (amd64 + arm64), signs and then tags the multi-arch
-image on version tags; `security.yml` runs gitleaks and Trivy. Actions are
-pinned by commit SHA. `shellcheck`/`hadolint` are not installed in this
-container — run them via their official images. Docker is not reachable from
+image on version tags (built without the layer cache);
+`security.yml` runs gitleaks and Trivy; `e2e.yml` (weekly and by hand) builds
+the image against a real Docker daemon and runs the smoke test, `doctor` and
+the docker-backed wrapper paths. Actions are pinned by commit SHA.
+`shellcheck`/`hadolint` are not installed in this container — run them via
+their official images or `uvx --from shellcheck-py shellcheck` /
+`uvx --from hadolint-py hadolint`. Docker is not reachable from
 the agent sandbox, so image changes cannot be built or smoke-tested here.
 
 ## Code Style Guidelines
@@ -192,9 +200,11 @@ stderr so command output stays pipeable. Color codes are plain variables
   `mcp.json`, `skills/`, `sessions/`, `audit.log` and the runtime state files;
   `harden_state_permissions` keeps the tree `0700`/`0600`.
 - `build_standard_volume_args "$project_dir" [docker_socket]` — populates
-  `VOLUME_ARGS` (project rw; `mcp.json`, `skills/` and `allow.json` ro;
-  `sessions/`, `auth.json`, `mcp-auth.json`, `trust.json`, `mcp.log`,
-  `audit.log`, `.npm`, `.cache/qmd` rw; `~/.claude` and `~/.agents` ro; optional
+  `VOLUME_ARGS` (project rw with its `.git`/`.gitmodules` ro unless
+  `setting.git_readonly=false`; `mcp.json`, `skills/`, `allow.json` and
+  `trust.json` ro; `sessions/`, `auth.json`, `mcp-auth.json`, `mcp.log`,
+  `audit.log`, `.npm`, `.cache/qmd` rw; `~/.claude/skills` and
+  `~/.agents/skills` ro; optional
   docker socket). Returns 1 when the project would shadow a system path. The
   state shared between sessions (MCP state, caches, compat skills) is added by
   `build_shared_state_args`, which `--untrusted` skips.
@@ -225,9 +235,15 @@ stderr so command output stays pipeable. Color codes are plain variables
   `--untrusted`); `entrypoint.sh` checks the settings' security keys.
 - `test_seam VAR` — variables that execute commands or pick paths the wrapper
   deletes/forwards (`GPG_RELAY_DIR`, `GPG_AGENT_SOCKET`, …) are honored only
-  with `PI_DOCKERIZED_TEST=1`.
+  with `PI_DOCKERIZED_TEST=1`. The same holds for the config roots
+  (`PI_CONFIG_ROOT`, `CONFIG_DIR`, `CONFIG_FILE`, `PI_HOME`, `EXT_AGENT_DIR`):
+  `core.sh` drops them from the environment outside test mode, so the tests
+  export `PI_DOCKERIZED_TEST=1`.
 - `env_key_forbidden` (`parse.sh`) — secrets-file keys that are refused
-  (`LD_*`, `NODE_OPTIONS`, `PI_DOCKERIZED_*`, …).
+  (`LD_*`, `NODE_OPTIONS`, `PI_DOCKERIZED_*`, `JITI_*`, `GIT_CONFIG*`, …).
+- Container-written data (`sessions/`, `audit.log`, labels) is printed only
+  through `strip_control_chars` / `json_escape`, and read only from regular
+  files (never a symlink or FIFO the session planted).
 - `check_pi_state` / `sync_pi_state` — validate/repair host state (`config sync`).
 - GPG/SSH forwarding helpers: `ensure_gpg_mirror`,
   `resolve_gpg_agent_socket`/`_extra_socket`, `start_gpg_relay`/`stop_gpg_relay`.
@@ -247,7 +263,8 @@ setting.docker_socket=false
 setting.network=host
 setting.security_policy=balanced
 setting.allowed_tools=
-setting.verify_updates=false
+setting.git_readonly=true
+setting.verify_updates=true
 setting.memory=4g
 setting.cpus=2
 setting.pids_limit=4096
@@ -345,7 +362,9 @@ reports unknown settings, invalid values and stray lines with their line number.
 - Writes are allowed only inside the project directory and `/tmp/pi`, and never
   to anything under a `.git` path component or `.gitmodules` (Git on the host
   executes `.git/config`, hooks, `commondir`, submodule configs, …); `git
-  config` writes are limited to a harmless allow-list (`backstops.mjs`).
+  config` writes are limited to a harmless allow-list (`backstops.mjs`). The
+  structural layer is `build_git_readonly_args` (`.git`/`.gitmodules` mounted
+  read-only, `setting.git_readonly`); the guard rules are defense in depth.
 - Prefer a policy mode, `config allow edit` (host `allow.json`) or
   `policies/allow-patterns.json` over editing the vendored `policies/*.json`;
   refresh the vendored files with `scripts/refresh-policies.sh`.
@@ -362,15 +381,17 @@ Host paths are relative to the profile directory (`profiles/<name>/`).
 | `home/.pi/agent/settings.json` | `/home/coder/.pi/agent/settings.json` | **ro** | Host preferences (seeded from defaults; replaced by the packages file while Pi Packages are installed) |
 | `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages (only after the first install; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions |
-| `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
+| `home/.pi/agent/{auth,mcp-auth}.json`, `mcp.log` | idem | rw | Runtime state |
 | `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |
-| `home/.pi/agent/allow.json` | idem | **ro** | Optional host allow rules (absent with `--untrusted`) |
+| `home/.pi/agent/allow.json` | idem | **ro** | Optional host allow rules (absent with `--untrusted`; the guard reads it only via `PI_DOCKERIZED_ALLOW_FILE`) |
+| `home/.pi/agent/trust.json` | idem | **ro** | Saved project-trust decisions (`config trust edit`) |
 | `home/.pi/agent/models.json` | idem | **ro** | Provider definitions (absent or `--untrusted`: not mounted) |
 | `home/.pi/agent/prompts/`, `themes/` | idem | rw | Prompt templates and themes (data) |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache |
 | `home/.cache/qmd/` | `/home/coder/.cache/qmd/` | rw | qmd index and models |
 | `home/.pi-lens/` | `/home/coder/.pi-lens/` | rw | pi-lens state |
-| `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
+| `~/.claude/skills/`, `~/.agents/skills/` | idem | ro | Compat skills (never the whole directories) |
+| `$PROJECT_DIR/.git`, `.gitmodules` | idem | **ro** | Git metadata (`setting.git_readonly`, default on) |
 | `~/.composio/` | idem | rw | Composio CLI (custom mount) |
 | `/var/run/docker.sock` | idem | rw (opt-in) | Docker socket |
 | `home/.gnupg-sessions/<pid>/` | `/home/coder/.gnupg/` | rw (opt-in) | This session's mirrored public GnuPG material (removed when it ends) |

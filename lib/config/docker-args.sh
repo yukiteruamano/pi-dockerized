@@ -17,7 +17,7 @@
 # (e.g. a `commondir` aimed at another private repo) is ignored.
 # Usage: main_git_dir=$(detect_git_worktree "/path/to/worktree")
 detect_git_worktree() {
-    local project_dir="$1" line gitdir back common
+    local project_dir="$1" line gitdir back common project_real
 
     [ -f "$project_dir/.git" ] && [ ! -L "$project_dir/.git" ] || return 0
     IFS= read -r line 2>/dev/null <"$project_dir/.git" || return 0
@@ -29,7 +29,15 @@ detect_git_worktree() {
     [ "$(basename "$(dirname "$gitdir")")" = worktrees ] || return 0
     common=$(dirname "$(dirname "$gitdir")")
 
-    # The back-pointer git writes for every linked worktree.
+    # A real worktree's common dir lives outside the worktree. One inside the
+    # project was planted by the session, which could swap it for a symlink
+    # between this check and `docker run` (the daemon follows it).
+    project_real=$(canonical_path "$project_dir")
+    path_within "$common" "$project_real" && return 0
+
+    # The back-pointer git writes for every linked worktree. Regular files
+    # only: a FIFO would hang the wrapper.
+    [ -f "$gitdir/gitdir" ] && [ ! -L "$gitdir/gitdir" ] || return 0
     IFS= read -r back 2>/dev/null <"$gitdir/gitdir" || return 0
     [ "$(canonical_path "$back")" = "$(canonical_path "$project_dir/.git")" ] || return 0
 
@@ -78,6 +86,22 @@ build_git_worktree_args() {
 
     # Mount the main repo's .git directory at its real host path (read-only)
     GIT_WORKTREE_ARGS+=(-v "$git_common_dir:$git_common_dir:ro")
+}
+
+# Mount the project's .git (directory or gitfile) and .gitmodules read-only
+# over the project mount (setting.git_readonly, default on). Git on the host
+# executes hooks, config and submodule settings from them, so a writable .git
+# is a sandbox escape that no pattern match can fully close; a read-only bind
+# also makes hard links into it fail (EXDEV). Symlinks are skipped: Docker
+# would follow them to wherever they point.
+# Appends to VOLUME_ARGS. Usage: build_git_readonly_args <project_dir> <container_dir>
+build_git_readonly_args() {
+    local project_dir="$1" container_dir="$2" entry
+    [ "${GIT_READONLY:-true}" = true ] || return 0
+    for entry in .git .gitmodules; do
+        [ -e "$project_dir/$entry" ] && [ ! -L "$project_dir/$entry" ] || continue
+        VOLUME_ARGS+=(--mount "type=bind,source=$project_dir/$entry,target=$container_dir/$entry,readonly")
+    done
 }
 
 # ============================================
@@ -184,10 +208,18 @@ build_common_docker_args() {
     # Strict mode refuses tools outside the built-in set unless listed here.
     DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_ALLOWED_TOOLS=$ALLOWED_TOOLS")
 
-    # Where the guard finds the optional host allow rules and writes its audit
-    # log (both mounted by build_standard_volume_args when present).
-    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_ALLOW_FILE=$PI_AGENT_CONTAINER_DIR/allow.json")
+    # Where the guard writes its audit log. The allow file is only named when
+    # the host one is mounted (build_standard_volume_args): otherwise the guard
+    # loads none, so a file the session creates in the agent dir is ignored.
     DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_AUDIT_FILE=$PI_AGENT_CONTAINER_DIR/audit.log")
+
+    # Pin the session store: a project .pi/settings.json `sessionDir` is read
+    # before project trust is decided, and the variable overrides it.
+    DOCKER_COMMON_ARGS+=(-e "PI_CODING_AGENT_SESSION_DIR=$PI_AGENT_CONTAINER_DIR/sessions")
+
+    # No on-disk transpile cache for extensions: the session owns $TMPDIR, and
+    # a forged cache entry would replace the guard's code on /reload.
+    DOCKER_COMMON_ARGS+=(-e "JITI_FS_CACHE=false")
 }
 
 # Which settings.json a session mounts: "ext" when Pi Packages are installed
@@ -242,17 +274,17 @@ build_shared_state_args() {
         VOLUME_ARGS+=(-v "$PI_HOME/.pi-lens:/home/coder/.pi-lens:rw")
     fi
 
-    # Claude Code compatibility directory (optional): fallback CLAUDE.md rules
-    # and ~/.claude/skills.
-    if [ -d "$HOME/.claude" ]; then
-        VOLUME_ARGS+=(-v "$HOME/.claude:/home/coder/.claude:ro")
-    fi
-
-    # Agent-compatible skills directory (optional).
-    # Pi also reads skills from ~/.agents/skills/<name>/SKILL.md.
-    if [ -d "$HOME/.agents" ]; then
-        VOLUME_ARGS+=(-v "$HOME/.agents:/home/coder/.agents:ro")
-    fi
+    # Compat skill directories (optional): only their skills/ subtree, never
+    # the whole ~/.claude (Claude Code keeps its login and transcripts there)
+    # or ~/.agents. Validated like a custom mount: a symlink could point
+    # anywhere. Pi reads ~/.agents/skills/<name>/SKILL.md natively.
+    local compat
+    for compat in .claude .agents; do
+        if [ -d "$HOME/$compat/skills" ] &&
+            validate_mount_source "$HOME/$compat/skills" "$compat skills" 2>/dev/null; then
+            VOLUME_ARGS+=(-v "$HOME/$compat/skills:/home/coder/$compat/skills:ro")
+        fi
+    done
 }
 
 # Build standard volume mount arguments for Pi directories.
@@ -279,6 +311,7 @@ build_standard_volume_args() {
     if [ -n "$project_dir" ] && [ -n "$CONTAINER_WORKDIR" ]; then
         validate_container_path "$CONTAINER_WORKDIR" "the project" || return 1
         VOLUME_ARGS+=(-v "$project_dir:$CONTAINER_WORKDIR")
+        build_git_readonly_args "$project_dir" "$CONTAINER_WORKDIR"
         build_git_worktree_args "$project_dir"
     fi
 
@@ -349,7 +382,7 @@ build_standard_volume_args() {
     # Runtime state Pi writes into the agent directory. auth.json (provider
     # logins) is the only one an untrusted session keeps: without it OAuth
     # providers could not refresh their tokens.
-    local -a state_files=(auth.json mcp-auth.json trust.json mcp.log)
+    local -a state_files=(auth.json mcp-auth.json mcp.log)
     [ "$untrusted" = true ] && state_files=(auth.json)
     local state_file
     for state_file in "${state_files[@]}"; do
@@ -357,6 +390,14 @@ build_standard_volume_args() {
             VOLUME_ARGS+=(-v "$agent/$state_file:$PI_AGENT_CONTAINER_DIR/$state_file:rw")
         fi
     done
+
+    # Saved project-trust decisions are read-only: a writable trust.json lets
+    # a session pre-approve the .pi/ extensions it plants in the project, so
+    # the next session would load them without asking. Edit it on the host
+    # (`pi-dockerized config trust edit`).
+    if [ -f "$agent/trust.json" ] && [ "$untrusted" != true ]; then
+        VOLUME_ARGS+=(-v "$agent/trust.json:$PI_AGENT_CONTAINER_DIR/trust.json:ro")
+    fi
 
     # Guard audit log (read-write): one JSON line per blocked call.
     if [ -f "$agent/audit.log" ]; then
@@ -373,6 +414,7 @@ build_standard_volume_args() {
             return 1
         fi
         VOLUME_ARGS+=(-v "$agent/allow.json:$PI_AGENT_CONTAINER_DIR/allow.json:ro")
+        VOLUME_ARGS+=(-e "PI_DOCKERIZED_ALLOW_FILE=$PI_AGENT_CONTAINER_DIR/allow.json")
     fi
 
     # Host-managed provider definitions (read-only: the session cannot point

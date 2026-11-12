@@ -172,7 +172,9 @@ RUN uv tool install "yt-dlp==${YT_DLP_VERSION}" && yt-dlp --version
 # NVM installs the current Node LTS and the Docker apt repo tracks `stable` on
 # purpose: both follow upstream security fixes. Pi, qmd, yt-dlp, uv, pnpm and
 # nvm are pinned; the npm dependencies of Pi and qmd are resolved at build time
-# under PNPM_CONFIG_MINIMUM_RELEASE_AGE.
+# under PNPM_CONFIG_MINIMUM_RELEASE_AGE. Fail the build if pnpm stops reading
+# that variable: the release-age gate would otherwise turn off silently.
+RUN test "$(pnpm config get minimum-release-age)" = "${PNPM_CONFIG_MINIMUM_RELEASE_AGE}"
 
 # Install qmd (on-device markdown search engine) globally with pnpm. pnpm skips
 # dependency install scripts unless allowed; these are the native modules qmd
@@ -199,6 +201,10 @@ RUN test "$(pi --version 2>&1 | tail -n 1)" != "0.0.0"
 # baked here read-only at build time; the writable state (sessions,
 # auth, MCP OAuth, trust, logs) is bind-mounted from the host at run time.
 ENV PI_CODING_AGENT_DIR="/home/coder/.pi/agent"
+# Pi loads extensions (the guard's index.ts included) through jiti, whose
+# on-disk transpile cache lives in the session-writable $TMPDIR: a forged entry
+# would replace the guard's code on /reload. Transpile in memory only.
+ENV JITI_FS_CACHE=false
 # Do NOT set PI_PACKAGE_DIR: Pi reads its own package.json (version), themes and
 # docs from it, so overriding it makes `pi --version` report 0.0.0.
 
@@ -255,7 +261,11 @@ RUN agent=/home/coder/.pi/agent && \
     chmod -R g+rwX "$agent/sessions" "$agent/auth.json" "$agent/mcp-auth.json" \
       "$agent/trust.json" "$agent/mcp.log" /home/coder/.npm /home/coder/.cache && \
     chown root:coder /home/coder /home/coder/.pi "$agent" && \
-    chmod 1775 /home/coder /home/coder/.pi "$agent"
+    chmod 1775 /home/coder /home/coder/.pi "$agent" && \
+    find / -xdev -perm /6000 -type f -exec chmod a-s {} + && \
+    test -z "$(find / -xdev -perm /6000 -type f -print -quit)"
+# No setuid/setgid binaries are left (su, mount, passwd, ssh-keysign, ...): the
+# guard's root ownership then does not depend on no-new-privileges alone.
 USER coder
 # Fail the build, not the first session, when the lock does not hold for the
 # image's own user (uid 1000, the common host uid).

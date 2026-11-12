@@ -119,6 +119,7 @@ apply_session_overrides() {
         SSH_AGENT_SUPPORT=false
         GPG_AGENT_SUPPORT=false
         DOCKER_SOCKET=false
+        GIT_READONLY=true
         CUSTOM_MOUNTS=()
         CUSTOM_MOUNT_KEYS=()
     fi

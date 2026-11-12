@@ -49,6 +49,12 @@ run_ext_install() {
     # npm reads this variable, so Pi's own npm calls skip install scripts.
     if [ "$allow_scripts" != true ]; then script_env=(-e "npm_config_ignore_scripts=true"); fi
 
+    # The installer's npm cache is its own: sessions mount ~/.npm read-write, so
+    # a session could plant cache entries the next install would trust. Metadata
+    # is revalidated against the registry on top of that.
+    local npm_cache="$PI_HOME/.npm-ext"
+    (umask 077 && mkdir -p "$npm_cache") || exit 1
+
     SESSION_CONTAINER="pi-extensions-$$"
     DOCKER_CMD=(
         docker run "${tty_args[@]}" --name "$SESSION_CONTAINER"
@@ -56,8 +62,9 @@ run_ext_install() {
         "${DOCKER_COMMON_ARGS[@]}"
         -e "PI_CODING_AGENT_DIR=$PI_EXT_AGENT_CONTAINER_DIR"
         "${script_env[@]}"
+        -e "npm_config_prefer_online=true"
         -v "$EXT_AGENT_DIR:$PI_EXT_AGENT_CONTAINER_DIR:rw"
-        -v "$PI_HOME/.npm:/home/coder/.npm:rw"
+        -v "$npm_cache:/home/coder/.npm:rw"
         "$IMAGE_NAME" /usr/local/lib/pi-dockerized/ext-install.sh "$@"
     )
     launch_session

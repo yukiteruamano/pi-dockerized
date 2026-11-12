@@ -133,12 +133,23 @@ install_section_config() {
     fi
 }
 
+# True when a path can sit verbatim inside a double-quoted rc-file line: `"`,
+# `$`, a backtick or a backslash in the install path would otherwise run as
+# code at every shell start. Usage: rc_path_safe <path>
+rc_path_safe() {
+    [[ "$1" != *[\"\$\`\\]* && "$1" != *$'\n'* ]]
+}
+
 # Shell completions section. Usage: install_section_completions <repo_root>
 install_section_completions() {
     local REPO_ROOT="$1"
     if wants_section completions; then
         echo ""
         echo "Shell Completions Setup"
+        if ! rc_path_safe "$REPO_ROOT"; then
+            print_warning "Skipping completions: the install path contains quote, \$, backtick or backslash characters."
+            return 0
+        fi
         local bash_completion_line="[ -f \"$REPO_ROOT/completions/bash.sh\" ] && source \"$REPO_ROOT/completions/bash.sh\""
         local zsh_completion_line="[ -f \"$REPO_ROOT/completions/zsh.sh\" ] && source \"$REPO_ROOT/completions/zsh.sh\""
         local bash_completion_installed=false zsh_completion_installed=false

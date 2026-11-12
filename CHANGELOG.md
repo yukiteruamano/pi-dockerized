@@ -7,6 +7,113 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Security (guard 9)
+
+- **Git hooks without a `.git` path:** `git init`/`git clone` with
+  `--template`/`--separate-git-dir`, `-c init.templateDir=` and assignments of
+  `GIT_TEMPLATE_DIR`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or
+  `GIT_CONFIG*` are refused in every mode: re-initializing the shared
+  repository copied a session-written hooks dir into `.git`.
+- **Nested shells:** de-obfuscation now repeats until stable and the payload of
+  `sh -c`/`bash -c`/`eval` is evaluated in full, so `bash -c "echo x >
+  .g''it/hooks/pre-commit"` and `bash -c "cat .e''nv"` are refused.
+- **Empty expansions:** `$()`, empty backticks, `$@`, `$*`, `$""` and `$'\0'`
+  can no longer split a token (`cat .e$()nv`, `cp x .g$()it/hooks/x`).
+- **Hard links and globs into `.git`:** `link`/`ln`/`cp -l` of a git file,
+  live globs that expand to `.git`/`.gitmodules` in a writing, `cd` or
+  redirecting command (`cp hook .gi?/hooks/`, `mv x .g[i]t/hooks/`), and the
+  write/edit tools on a file with other hard links are refused. `rsync`,
+  `sponge`, `vi`/`vim`/`ex`/`ed` and `tar` join the `.git` writers;
+  `--exclude=.git` stays allowed.
+- **Agent directory:** `~/.pi/agent` (credentials, `models.json`, logs) may no
+  longer be named, listed or swept by shell commands or the read tools, except
+  `sessions/`, `skills/`, `prompts/`, `themes/`, `AGENTS.md`, `settings.json`
+  and `mcp.json`; recursive readers aimed at `~`, `/home` or `/` (`grep -r`,
+  `rg`, `cp -r`, `tar`, `find -exec`) are refused too.
+- **Secret globs:** fixed-length globs (`cat .??v`, `cat .???`), globs that
+  complete a `.key`/`.pem` name (`cat server.k?y`) and `/proc` environ globs
+  (`cat /proc/self/envir?n`) are refused.
+- **Environment dumps:** `env` by path or behind a wrapper (`/usr/bin/env`,
+  `command env`, `nohup env`, `busybox env`, `timeout 5 env`), BSD `ps e`/`ps
+  eww`/`ps auxe` and awk `for (k in ENVIRON)` are refused in every mode.
+- **Host allow file:** the guard loads an allow file only from
+  `PI_DOCKERIZED_ALLOW_FILE` (set by the wrapper when it mounts the host
+  file); a session-created `~/.pi/agent/allow.json` is never read.
+- **ReDoS:** the vendored `base64-payload-2` rule (cubic: 4 KiB took 22 s) is
+  replaced by an equivalent linear pattern through `RULE_OVERRIDES` (applied
+  only while upstream ships the expected pattern); blank runs are compacted
+  for every tool before the vendored scan, and the test suite times every rule
+  at the 32 KiB cap.
+- **Strict scopes:** `allowed_tools` scopes trim values and treat schemeless
+  hosts (`evil.example/x`) and URLs inside free text as URLs (now in
+  `scope.mjs`).
+- **Fewer false positives:** the grep tool's `pattern` is no longer checked as
+  a read path (`grep KEY .` passes).
+- Write paths longer than PATH_MAX are refused up front (a 16k-component path
+  overflowed the resolver's stack; it already failed closed).
+
+### Security (wrapper and image, audit hardening)
+
+- **`.git` read-only:** the project's `.git` and `.gitmodules` are mounted
+  read-only over the project (`setting.git_readonly`, default on; forced by
+  `--untrusted`). Planting a hook or config is no longer only a pattern-match
+  problem. **Behavior change:** `git commit`/`stash`/`fetch` inside a session
+  fail; run them on the host, or set `git_readonly=false` for trusted work.
+- **Compat skills only:** `~/.claude` and `~/.agents` are no longer mounted
+  whole (Claude Code keeps its OAuth login and transcripts in `~/.claude`);
+  only their `skills/` subtrees, validated like a custom mount.
+- **Saved trust is read-only:** `trust.json` is mounted read-only, so a session
+  cannot pre-approve the `.pi/` extensions it plants for the next one. New
+  `config trust [path|edit]` edits it on the host.
+- **Session store pinned:** sessions run with `PI_CODING_AGENT_SESSION_DIR`, so
+  a project `.pi/settings.json` `sessionDir` (read before trust) cannot move
+  transcripts into the repository or break the `--untrusted` separation.
+- **Guard code cache:** `JITI_FS_CACHE=false` (image, entrypoint and session):
+  a forged transpile-cache entry in `$TMPDIR` could replace the guard on
+  `/reload` without touching a root-owned file.
+- **No setuid binaries:** setuid/setgid bits are stripped at build and asserted
+  by the build and the smoke test. Inspection containers (smoke test, version
+  probes, `pull --no-verify`) run with no network, no capabilities and
+  `no-new-privileges`.
+- **Socket-holding mounts:** `/tmp`, `/var/tmp` (and ancestors), their socket
+  directories (`.X11-unix`, `tmux-*`, `ssh-*`, `vscode-*`), container VM homes
+  (`~/.colima`, `~/.rd`, `~/.lima`, `~/.orbstack`) and any source holding a
+  socket within three levels are refused as projects or mounts.
+- **Worktree pointers:** a worktree common dir inside the project (swappable
+  for a symlink before `docker run`) is never mounted, and a FIFO back-pointer
+  no longer hangs the wrapper.
+- **Pi Packages:** the installer has its own npm cache (`home/.npm-ext`, never
+  mounted into sessions) and revalidates registry metadata; the packages
+  settings accept only `npm:`/`git:`/`https:` sources whose filters stay inside
+  the package, and no top-level `skills`/`prompts`/`themes` paths.
+- **Secrets file:** also refuses every `LD_*`, `PROMPT_COMMAND`, `PYTHONPATH`,
+  `PERL5OPT`, `RUBYOPT`, `PI_CODING_AGENT_SESSION_DIR`, `PI_PACKAGE_DIR`,
+  `JITI_*`, `npm_config_*`, `GIT_CONFIG*`, `GIT_SSH_COMMAND` and the other Git
+  redirections, `GNUPGHOME` and `SSH_AUTH_SOCK`.
+- **Config roots:** `PI_CONFIG_ROOT`, `CONFIG_DIR`, `CONFIG_FILE`, `PI_HOME`
+  and `EXT_AGENT_DIR` are read from the environment only in test mode: a
+  project `.envrc` can no longer point the wrapper at a planted config.
+- **Updates verified by default:** `setting.verify_updates` now defaults to
+  `true` and `.github/release-signers` lists the maintainer's key; `update
+  --no-verify` skips the check once. **Behavior change:** import the key
+  first (`gpg --recv-keys BFCA2A05676373836813F60CD708154C84164B94`).
+  `install.sh` with `PI_DOCKERIZED_VERIFY=1` stages a fresh clone and removes
+  it when unsigned (a re-run used to run it unverified), and refuses to run a
+  reused unsigned checkout.
+- **Output hygiene:** `run --list`, `ps` and the incoming commits of `update`
+  are stripped of control characters (C1 included); `--json` output drops
+  them; `run --list` skips symlinks/FIFOs in `sessions/` and reads a bounded
+  prefix of each file.
+- **macOS:** path canonicalization no longer needs `readlink -m` (the mount
+  checks used to see the literal path) and path comparisons fold case.
+- Release images are built without the layer cache; the build fails if pnpm
+  stops honoring `PNPM_CONFIG_MINIMUM_RELEASE_AGE`; the entrypoint resolves the
+  diagnostics path before skipping its checks; completions are not written to
+  rc files when the install path holds shell metacharacters; config backups
+  are trimmed correctly in paths with spaces.
+- Docs: `SECURITY.md` names the `--network host` abstract-socket exposure
+  (X11/D-Bus) and drops the stale `monkey` note.
+
 ### Security (guard 8)
 
 - **Credential store:** `pi auth login`/`pi auth logout` (new in Pi 1.5.1) are

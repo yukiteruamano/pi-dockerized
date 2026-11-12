@@ -6,7 +6,7 @@
 # Keep these lists in sync with the wrapper: tests/wrapper-args.test.sh checks
 # them against the help text and SETTING_KEYS.
 _PI_COMMANDS="run exec shell auth models mcp extensions stats doctor audit ps stop install uninstall upgrade update build pull rollback version config profile clean help"
-_PI_SETTINGS="ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket network security_policy allowed_tools verify_updates memory cpus pids_limit env_file theme model default_profile"
+_PI_SETTINGS="ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket git_readonly network security_policy allowed_tools verify_updates memory cpus pids_limit env_file theme model default_profile"
 
 # Print the existing profile names; with "default", the root profile too.
 # Usage: _pi_profiles [default]
@@ -28,7 +28,7 @@ _pi_words() {
 _pi_setting_values() {
     case "$1" in
     ssh_agent_support | gpg_agent_support | gpg_allow_main_socket | gpg_autostart_agent | \
-        gpg_relay | docker_socket | verify_updates) echo "true false" ;;
+        gpg_relay | docker_socket | git_readonly | verify_updates) echo "true false" ;;
     network) echo "host bridge" ;;
     security_policy) echo "strict balanced off" ;;
     pids_limit) echo "4096 unlimited" ;;
@@ -143,12 +143,12 @@ _pi_dockerized() {
         ;;
     install) _pi_words "--yes --only --help" ;;
     uninstall) _pi_words "--yes --image --purge-config --all-profiles" ;;
-    upgrade | update) _pi_words "--check --yes --no-build --verify --pi-version" ;;
+    upgrade | update) _pi_words "--check --yes --no-build --verify --no-verify --pi-version" ;;
     build) _pi_words "--pi-version --bust-cache --fresh" ;;
     pull) _pi_words "--no-verify --allow-downgrade" ;;
     config)
         if [ "$arg" -eq 1 ]; then
-            _pi_words "show edit get set path sync pi allow"
+            _pi_words "show edit get set path sync pi allow trust"
             return 0
         fi
         case "$sub" in
@@ -166,7 +166,7 @@ _pi_dockerized() {
             fi
             ;;
         sync) _pi_words "--check" ;;
-        pi | allow) [ "$arg" -eq 2 ] && _pi_words "path edit" ;;
+        pi | allow | trust) [ "$arg" -eq 2 ] && _pi_words "path edit" ;;
         esac
         ;;
     profile)

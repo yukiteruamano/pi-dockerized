@@ -91,6 +91,8 @@ export const PREFERENCE_KEYS = [
 // the package runs) may never carry: they run commands, load code from a path
 // or route traffic. `pi install` itself only writes `packages`. selfUpdateCommand
 // matters because `extensions update` runs `pi update`, which executes it.
+// skills/prompts/themes at the top level are paths Pi loads as they are, and
+// a session can write to some paths (the project, prompts/, themes/).
 export const PACKAGE_DENIED_KEYS = [
   "shellPath",
   "shellCommandPrefix",
@@ -99,7 +101,44 @@ export const PACKAGE_DENIED_KEYS = [
   "externalEditor",
   "httpProxy",
   "extensions",
+  "skills",
+  "prompts",
+  "themes",
 ];
+
+// Package sources the packages file may declare: registry and remote git only
+// (what `pi-dockerized extensions install` accepts). A local path would load
+// code from wherever it points, possibly a directory the session can write.
+const PACKAGE_SOURCE_RE = /^(npm:[^\s]+|git:[^\s]+|https:\/\/[^\s]+)$/;
+
+// Resource filters inside a package entry select paths within the package;
+// none may climb out of it or start at the root.
+const FILTER_KEYS = ["extensions", "skills", "prompts", "themes"];
+const unsafeFilter = (pattern) =>
+  typeof pattern !== "string" || /(^|[\\/])\.\.([\\/]|$)/.test(pattern) || /^[!+-]?[\\/~]/.test(pattern);
+
+/** Why one `packages` entry is refused, or "" when it is acceptable. */
+export function packageProblem(entry) {
+  const source = typeof entry === "string" ? entry : entry?.source;
+  if (typeof source !== "string" || !PACKAGE_SOURCE_RE.test(source)) {
+    return `package source ${JSON.stringify(source)} is not npm:, git: or https:`;
+  }
+  if (typeof entry === "object") {
+    for (const key of FILTER_KEYS) {
+      if (key in entry && (!Array.isArray(entry[key]) || entry[key].some(unsafeFilter))) {
+        return `package ${source}: ${key} filter leaves the package`;
+      }
+    }
+  }
+  return "";
+}
+
+const packageProblems = (settings) =>
+  "packages" in settings
+    ? Array.isArray(settings.packages)
+      ? settings.packages.map(packageProblem).filter(Boolean)
+      : ["packages is not a list"]
+    : [];
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -128,7 +167,7 @@ export function violations(settings, base, { host = false } = {}) {
     const denied = PACKAGE_DENIED_KEYS.filter((key) => key in settings).map(
       (key) => `${key} may not be set (it runs commands, loads code or routes traffic)`,
     );
-    return [...pinned, ...denied];
+    return [...pinned, ...denied, ...packageProblems(settings)];
   }
   const foreign = Object.keys(settings)
     .filter((key) => !SECURITY_KEYS.includes(key) && !PREFERENCE_KEYS.includes(key))
@@ -136,11 +175,19 @@ export function violations(settings, base, { host = false } = {}) {
   return [...pinned, ...foreign];
 }
 
-/** `settings` with the security keys of `base` applied, denied keys dropped. */
+/**
+ * `settings` with the security keys of `base` applied, denied keys and
+ * refused package entries dropped.
+ */
 export function enforced(settings, base) {
   const out = { ...settings };
   for (const key of SECURITY_KEYS) out[key] = base[key];
   for (const key of PACKAGE_DENIED_KEYS) delete out[key];
+  if ("packages" in out) {
+    out.packages = Array.isArray(out.packages)
+      ? out.packages.filter((entry) => packageProblem(entry) === "")
+      : [];
+  }
   return out;
 }
 

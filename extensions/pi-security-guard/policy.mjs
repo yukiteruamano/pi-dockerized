@@ -6,29 +6,73 @@
 // handler; selftest.mjs runs the same logic as a fail-closed boot check.
 //
 // Layout: backstops.mjs (built-in deny-lists), shell.mjs (de-obfuscation),
-// balanced-excluded.json (what the "balanced" mode drops).
+// scope.mjs (strict-mode tool scopes), balanced-excluded.json (what the
+// "balanced" mode drops).
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import {
+  AGENT_DIR,
+  AGENT_DIR_RE,
+  AGENT_HOME,
+  AGENT_SAFE_ENTRIES,
+  ANCESTOR_SWEEP,
   DENY_BASH,
   DENY_READ,
   DENY_SECRET_PATH,
   SECRET_PATH_RE,
   gitConfigWrite,
+  globTargetsGit,
   globTargetsSecret,
 } from "./backstops.mjs";
-import { compactBlanks, globForm, normalizeShell, shellVariants } from "./shell.mjs";
+import {
+  compactBlanks,
+  globForm,
+  nestedCommands,
+  normalizeShell,
+  shellVariants,
+} from "./shell.mjs";
+import { allowedScope, inScope, normalizeLexical } from "./scope.mjs";
 
-export { DENY_BASH, DENY_READ, DENY_SECRET_PATH, SECRET_PATH_RE, normalizeShell };
+export {
+  DENY_BASH,
+  DENY_READ,
+  DENY_SECRET_PATH,
+  SECRET_PATH_RE,
+  allowedScope,
+  inScope,
+  normalizeLexical,
+  normalizeShell,
+};
 
 // Bump when guard behavior changes. Single source of truth: the wrapper's
 // `version`/`doctor` read it from the image through selftest.mjs.
-export const GUARD_VERSION = 8;
+export const GUARD_VERSION = 9;
 
 // Longest value evaluated. Several vendored and backstop patterns scan with
-// `[^\n|;&]*`, which is quadratic on long lines: 100 KiB takes ~50 s. Beyond the
-// cap the call is refused (fail closed); file contents belong in the write tool.
+// `[^\n|;&]*`, which is quadratic on long lines. Beyond the cap the call is
+// refused (fail closed); file contents belong in the write tool. Every rule is
+// timed at the cap by the test suite (tests/security-guard.test.mjs), and
+// super-linear vendored rules are replaced through RULE_OVERRIDES.
 export const MAX_EVAL_LENGTH = 32 * 1024;
+
+// Vendored rules whose upstream regex backtracks super-linearly, by id, with
+// an equivalent pattern that does not. The vendored JSON stays untouched (it is
+// refreshed from upstream); compile() swaps the pattern in only while upstream
+// still ships exactly `from` (a test flags a stale override after a refresh).
+export const RULE_OVERRIDES = {
+  // `{40,}={0,2}.*` retries every split of a long failing base64 run (cubic:
+  // 4 KiB took 22 s). Same language: 40 base64 chars from the start of a run
+  // (the extra run, padding and `.*` all fold into the lookahead's `.*`).
+  "base64-payload-2": {
+    from: "[A-Za-z0-9+/]{40,}={0,2}.*(выполни|запусти|run|exec)",
+    to: "(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40}(?=.*(выполни|запусти|run|exec))",
+  },
+};
+
+const rulePattern = (rule) => {
+  const override = RULE_OVERRIDES[rule.id];
+  return override && override.from === rule.pattern ? override.to : rule.pattern;
+};
 
 const loadBalancedExcluded = () => {
   try {
@@ -93,7 +137,7 @@ export function compile(rules, onSkip = () => {}) {
           id: rule.id,
           reason: rule.reason,
           adminBypass: rule.admin_bypass === true,
-          re: cachedRegExp(rule.pattern, flags),
+          re: cachedRegExp(rulePattern(rule), flags),
         };
       } catch {
         onSkip(rule);
@@ -133,22 +177,6 @@ export function isAllowed(allowRules, value) {
     if (rule.re.test(value)) return true;
   }
   return false;
-}
-
-/** Lexically normalize a path (resolve `.`/`..`/duplicate slashes). */
-export function normalizeLexical(p) {
-  const absolute = p.startsWith("/");
-  const parts = p.split("/");
-  const stack = [];
-  for (const part of parts) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (stack.length > 0) stack.pop();
-      continue;
-    }
-    stack.push(part);
-  }
-  return (absolute ? "/" : "") + stack.join("/");
 }
 
 /** Resolve a path to its real location, or undefined if it cannot be resolved. */
@@ -246,7 +274,10 @@ function scanVendored({ shellLike, strings, unsafePatterns, allowPatterns }) {
   for (const value of strings) {
     if (typeof value !== "string" || value === "") continue;
     if (isAllowed(allowPatterns, value)) continue;
-    const forms = shellLike ? shellVariants(value) : [value];
+    // Blank runs change no verdict but feed the quadratic `cat\s+…` rules
+    // (32 KiB of blanks took ~0.8 s per rule). Only the matched text is
+    // compacted: write targets are still resolved from the literal path.
+    const forms = shellLike ? shellVariants(value) : [compactBlanks(value)];
     for (const form of forms) {
       const rule = matchRule(unsafePatterns, form);
       if (rule) return vendoredBlock(rule);
@@ -255,17 +286,41 @@ function scanVendored({ shellLike, strings, unsafePatterns, allowPatterns }) {
   return undefined;
 }
 
+// Nested shell payloads evaluated in full (`bash -c "bash -c '…'"`).
+const MAX_NESTED_DEPTH = 3;
+
 // Built-in backstops for shell commands, covering gaps the pattern sets miss.
 // Also run over every string of tools this policy does not model.
-function scanShellBackstops(command) {
-  const glob = globTargetsSecret(globForm(command));
+function scanShellBackstops(command, depth = 0) {
+  const live = globForm(command);
+  const glob = globTargetsSecret(live);
   if (glob) {
     return blocked(
       `Blocked by pi-dockerized security policy: glob can expand to ${glob}: ${command}`,
       "backstop/secret-glob",
     );
   }
+  const gitGlob = globTargetsGit(live);
+  if (gitGlob) {
+    return blocked(
+      `Blocked by pi-dockerized security policy: glob can expand to ${gitGlob} (git metadata runs on the host): ${command}`,
+      "backstop/git-glob",
+    );
+  }
+  if (depth < MAX_NESTED_DEPTH) {
+    for (const nested of nestedCommands(command)) {
+      const hit = scanShellBackstops(nested, depth + 1);
+      if (hit) return hit;
+    }
+  }
   for (const form of shellVariants(command)) {
+    if (AGENT_DIR_RE.test(form) || ANCESTOR_SWEEP.some((re) => re.test(form))) {
+      return blocked(
+        "Blocked by pi-dockerized security policy: the agent directory holds credentials: " +
+          command,
+        "backstop/agent-dir",
+      );
+    }
     const config = gitConfigWrite(form);
     if (config) {
       return blocked(
@@ -293,12 +348,44 @@ function scanShellBackstops(command) {
   return undefined;
 }
 
+/**
+ * Strings of a read-tool call that name what it reads. The grep tool's
+ * `pattern` is a search expression, not a path (`KEY` is no key file).
+ */
+export function readTargetStrings(tool, obj) {
+  if (tool !== "grep" || typeof obj !== "object" || obj === null || Array.isArray(obj)) {
+    return collectStrings(obj);
+  }
+  const { pattern, ...rest } = obj;
+  const targets = collectStrings(rest);
+  // Unknown schema (only a pattern): fail closed by evaluating it.
+  return targets.length > 0 ? targets : collectStrings(obj);
+}
+
+// The agent dir and its unlisted entries (see AGENT_DIR_RE); `~` as the tool
+// would expand it. Content search (grep) is refused from any ancestor too.
+function agentDirTarget(path, tool) {
+  const expanded = path.replace(/^~(?=\/|$)/, AGENT_HOME);
+  for (const candidate of [expanded, tryRealpath(expanded)]) {
+    if (!candidate || !candidate.startsWith("/")) continue;
+    const p = normalizeLexical(candidate);
+    if (p === AGENT_DIR || p === `${AGENT_HOME}/.pi`) return true;
+    if (p.startsWith(AGENT_DIR + "/")) {
+      const entry = p.slice(AGENT_DIR.length + 1).split("/")[0];
+      if (!AGENT_SAFE_ENTRIES.includes(entry)) return true;
+    }
+    if (tool === "grep" && (AGENT_DIR + "/").startsWith(p === "/" ? "/" : p + "/")) return true;
+  }
+  return false;
+}
+
 // Each value is tested alone so the `$`/`^` anchors in DENY_READ apply to a
 // path, not to a space-joined list of every input string.
-function scanReadTargets(strings) {
+function scanReadTargets(strings, tool) {
   for (const path of strings) {
+    if (typeof path !== "string" || path === "") continue;
     const real = tryRealpath(path);
-    if (DENY_READ.test(path) || (real && DENY_READ.test(real))) {
+    if (DENY_READ.test(path) || (real && DENY_READ.test(real)) || agentDirTarget(path, tool)) {
       return blocked(
         "Blocked by pi-dockerized security policy: refusing to read " + path,
         "backstop/read",
@@ -310,6 +397,8 @@ function scanReadTargets(strings) {
 
 // Symlink hops followed before a write target counts as unresolvable.
 const MAX_LINK_HOPS = 40;
+// Linux PATH_MAX (bytes, including the terminating NUL).
+const PATH_MAX = 4096;
 
 /**
  * Where a write to absolute path `p` lands, following symlinks the way the
@@ -319,6 +408,9 @@ const MAX_LINK_HOPS = 40;
  */
 export function resolveWriteTarget(p, hops = { left: MAX_LINK_HOPS }) {
   if (p === "/") return "/";
+  // Past PATH_MAX no write can succeed; refusing also bounds the recursion
+  // (one frame per component: 16k components overflowed the stack).
+  if (p.length > PATH_MAX) return undefined;
   const real = tryRealpath(p);
   if (real) return real;
   const slash = p.lastIndexOf("/");
@@ -382,93 +474,27 @@ function scanWriteTargets(strings, roots) {
         "backstop/write-confinement",
       );
     }
+    // A hard link shares its inode with another name, possibly `.git/config`
+    // (`ln .git/config cfg`): writing it writes that file too.
+    if (hardLinked(target)) {
+      return blocked(
+        "Blocked by pi-dockerized security policy: the file has other hard links (it may alias git metadata): " +
+          path,
+        "backstop/hard-link",
+      );
+    }
   }
   return undefined;
 }
 
-/**
- * Scope entries in `allowedTools` for one unknown tool. Entries are `name`
- * (or `name:*`, same thing: the tool is allowed, its values still scanned)
- * or `name:scope1+scope2` (allowed only inside a scope, see inScope).
- * Plain names keep working exactly as before. Returns null when the
- * tool is not listed, "*" for unrestricted, or the scope array (last scoped
- * entry wins, but a later unrestricted entry still overrides it).
- */
-export function allowedScope(allowedTools, tool) {
-  let scoped = null;
-  for (const raw of allowedTools) {
-    const entry = String(raw).trim();
-    if (entry === tool) return "*";
-    if (entry.startsWith(tool + ":")) {
-      const scopes = entry
-        .slice(tool.length + 1)
-        .split("+")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (scopes.length === 0 || scopes.includes("*")) return "*";
-      scoped = scopes;
-    }
-  }
-  return scoped;
-}
-
-const parseUrl = (value) => {
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return undefined;
+/** True when an existing regular file has more than one link. */
+function hardLinked(path) {
   try {
-    return new URL(value);
+    const stat = statSync(path);
+    return stat.isFile() && stat.nlink > 1;
   } catch {
-    return undefined;
+    return false; // does not exist yet: the write creates a fresh inode
   }
-};
-
-// Path prefix on a segment boundary: /data covers /data and /data/x, never
-// /database.
-const underPath = (path, prefix) => {
-  const base = prefix.replace(/\/+$/, "");
-  return path === base || path.startsWith(base + "/") || base === "";
-};
-
-/**
- * True when a URL value lies inside one scope. A scope is `host[/path]`
- * (`github.com/myorg`; subdomains of the host count), a full URL, or an
- * absolute path (matches nothing here). Only host and path are compared, so
- * the scope text in a query string or fragment does not count.
- */
-function urlInScope(url, scope) {
-  const parsed = parseUrl(scope) ?? parseUrl("https://" + scope);
-  if (!parsed || scope.startsWith("/")) return false;
-  const host = url.hostname.toLowerCase();
-  const scopeHost = parsed.hostname.toLowerCase();
-  if (host !== scopeHost && !host.endsWith("." + scopeHost)) return false;
-  if (parseUrl(scope) && parsed.protocol !== url.protocol) return false;
-  return underPath(normalizeLexical(url.pathname), normalizeLexical(parsed.pathname));
-}
-
-/**
- * Whether a tool call stays inside its scopes: every URL and every absolute
- * path among its values must be inside one scope, and at least one value must
- * be (URLs and paths by the rules above, other values by equality or a
- * `scope/` prefix). Free text (queries, messages) is otherwise unconstrained.
- */
-export function inScope(scopes, strings) {
-  let matched = false;
-  for (const value of strings) {
-    if (typeof value !== "string" || value === "") continue;
-    const url = parseUrl(value);
-    if (url) {
-      if (!scopes.some((s) => urlInScope(url, s))) return false;
-      matched = true;
-    } else if (value.startsWith("/")) {
-      const path = normalizeLexical(value);
-      if (!scopes.some((s) => s.startsWith("/") && underPath(path, normalizeLexical(s)))) {
-        return false;
-      }
-      matched = true;
-    } else if (scopes.some((s) => value === s || value.startsWith(s + "/"))) {
-      matched = true;
-    }
-  }
-  return matched;
 }
 
 /**
@@ -580,7 +606,7 @@ export function evaluateToolCall({
   }
 
   if (READ_TOOLS.has(tool)) {
-    const hit = scanReadTargets(strings);
+    const hit = scanReadTargets(readTargetStrings(tool, obj), tool);
     if (hit) return hit;
   }
 

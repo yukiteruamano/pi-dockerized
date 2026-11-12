@@ -1,0 +1,8 @@
+# Fingerprints allowed to sign the upstream head that `update`/`upgrade` pull
+# (setting.verify_updates, on by default) and `install.sh` fast-forwards to
+# with PI_DOCKERIZED_VERIFY=1. One full fingerprint per line; the list is read
+# from the checkout as it is BEFORE an update, so an update cannot vouch for
+# itself. Import the key first, e.g. `gpg --recv-keys <fingerprint>`.
+
+# Jose Maldonado aka Yukiteru (maintainer)
+BFCA2A05676373836813F60CD708154C84164B94

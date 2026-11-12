@@ -11,6 +11,7 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  linkSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -27,6 +28,7 @@ import {
   EXTRA_WRITE_ROOTS,
   GUARD_VERSION,
   MAX_EVAL_LENGTH,
+  RULE_OVERRIDES,
   allowedScope,
   compile,
   inScope,
@@ -36,14 +38,26 @@ import {
   evaluateToolCall,
   redact,
 } from "../extensions/pi-security-guard/policy.mjs";
-import { gitConfigWrite, globTargetsSecret } from "../extensions/pi-security-guard/backstops.mjs";
 import {
+  AGENT_DIR_RE,
+  ANCESTOR_SWEEP,
+  DENY_BASH,
+  DENY_READ,
+  DENY_SECRET_PATH,
+  gitConfigWrite,
+  globTargetsGit,
+  globTargetsSecret,
+} from "../extensions/pi-security-guard/backstops.mjs";
+import {
+  compactBlanks,
   dequote,
   decodeAnsiC,
   expandBraces,
   globForm,
+  nestedCommands,
   normalizeShell,
   shellVariants,
+  stripEmptyExpansions,
 } from "../extensions/pi-security-guard/shell.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -329,6 +343,101 @@ const alwaysDeny = [
   ["read", join(PROJECT, ".ENV")],
   ["read", "/home/coder/.pi/agent/AUTH.JSON"],
   ["read", join(PROJECT, "server.PEM")],
+  // Guard 9: hooks planted without naming a .git path.
+  ["bash", "git init --template=/tmp/pi/tpl"],
+  ["bash", "git init --template /tmp/pi/tpl"],
+  ["bash", "git clone --template=x https://github.com/a/b"],
+  ["bash", "git init --separate-git-dir=gd"],
+  ["bash", "git -c init.templateDir=/tmp/pi/tpl init"],
+  ["bash", "GIT_TEMPLATE_DIR=/tmp/pi/tpl git init"],
+  ["bash", "export GIT_DIR=gd"],
+  ["bash", "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.templateDir GIT_CONFIG_VALUE_0=/tmp/pi/t git init"],
+  ["bash", "GIT_CONFIG_GLOBAL=/tmp/pi/cfg git init"],
+  // Nested shells are de-obfuscated and evaluated in full.
+  ["bash", `bash -c "echo x > .g''it/hooks/pre-commit"`],
+  ["bash", `eval "cp x .g''it/hooks/pre-commit"`],
+  ["bash", `bash -c "cat .e''nv"`],
+  ["bash", `bash -c "e''nv"`],
+  ["bash", `sh -c 'cp x .gi?/hooks/'`],
+  ["bash", `bash -c "bash -c 'cat .e\\"\\"nv'"`],
+  // Empty expansions cannot split a token.
+  ["bash", "cat .e$()nv"],
+  ["bash", "cat .e``nv"],
+  ["bash", "cat .e$@nv"],
+  ["bash", "cat .e$*nv"],
+  ["bash", "cat .e${@}nv"],
+  ["bash", "cat .e$''nv"],
+  ["bash", 'cat .e$""nv'],
+  ["bash", "cat .e$'\\0'nv"],
+  ["bash", "cp x .g$()it/hooks/pre-commit"],
+  ["bash", "cat ~/.pi/agent/au$()th.json"],
+  // Hard links alias a git file under a project name.
+  ["bash", "link .git/config cfg"],
+  ["bash", "ln .gi?/config cfg"],
+  ["bash", "cp -l .gi?/config cfg"],
+  // Live globs that expand to the git dir.
+  ["bash", "cp post-commit .gi?/hooks/"],
+  ["bash", "cp -t .gi?/hooks post-commit"],
+  ["bash", "mv post-commit .g[i]t/hooks/"],
+  ["bash", "cd .gi?"],
+  ["bash", "pushd .g*t"],
+  ["bash", "echo x > .gi?/hooks/pre-commit"],
+  ["bash", "cp x .gitmodule?"],
+  ["bash", "shopt -s dotglob; cp x *it/hooks/"],
+  // More writers of a .git path.
+  ["bash", "rsync x .git/hooks/pre-commit"],
+  ["bash", "echo x | sponge .git/hooks/pre-commit"],
+  ["bash", "vim -c 'w .git/hooks/pre-commit'"],
+  ["bash", "ed .git/config"],
+  ["bash", "tar xf a.tar -C .git"],
+  ["bash", `awk '{print > ".git/hooks/x"}' f`],
+  // The agent dir holds credentials: never named, never swept.
+  ["bash", "grep -r . ~/.pi/agent"],
+  ["bash", "jq . ~/.pi/agent/a*.json"],
+  ["bash", "cat ~/.pi/agent/models.json"],
+  ["bash", "cat /home/coder/.pi/agent/mcp.log"],
+  ["bash", "ls ~/.pi/agent"],
+  ["bash", "ls $HOME/.pi/"],
+  ["bash", "cd ~/.pi && cat agent/models.json"],
+  ["bash", "cat ~/.pi/agent/sessions/../models.json"],
+  ["bash", "cat ~/.pi/./agent/models.json"],
+  ["bash", "cd ~ && cat .pi/agent/models.json"],
+  ["bash", "grep -rn token ~"],
+  ["bash", "grep -R sk- /home/coder"],
+  ["bash", "rg sk- /"],
+  ["bash", "cp -r ~ /tmp/pi/x"],
+  ["bash", "tar czf /tmp/pi/h.tgz ~/"],
+  ["bash", "find ~ -name x -exec cat {} +"],
+  ["read", "/home/coder/.pi/agent"],
+  ["read", "/home/coder/.pi"],
+  ["read", "/home/coder/.pi/agent/models.json"],
+  ["read", "/home/coder/.pi/agent/sessions/../mcp.log"],
+  ["read", "~/.pi/agent/models.json"],
+  ["grep", "/home/coder/.pi/agent"],
+  ["grep", "/home/coder"],
+  ["grep", "/"],
+  ["find", "/home/coder/.pi/agent"],
+  // Globs aimed at a secret without a shared literal pair.
+  ["bash", "cat .??v"],
+  ["bash", "cat .???"],
+  ["bash", "cat server.k?y"],
+  ["bash", "cat id.p?m"],
+  ["bash", "cat /proc/self/envir?n"],
+  ["bash", "cat /pro?/self/environ"],
+  ["bash", "cat /proc/*/env*"],
+  // Environment dumps by path, behind wrappers, through ps and awk.
+  ["bash", "/usr/bin/env"],
+  ["bash", "command env"],
+  ["bash", "exec env"],
+  ["bash", "nohup env"],
+  ["bash", "busybox env"],
+  ["bash", "timeout 5 env"],
+  ["bash", "nice -n 5 printenv"],
+  ["bash", "ps eww"],
+  ["bash", "ps e"],
+  ["bash", "ps auxe"],
+  ["bash", "ps -A e"],
+  ["bash", `awk 'BEGIN{for(k in ENVIRON)print k"="ENVIRON[k]}'`],
 ];
 
 // Allowed in every mode.
@@ -411,6 +520,38 @@ const alwaysAllow = [
   ["write", ".gitignore"],
   ["write", ".gitattributes"],
   ["write", ".github/workflows/ci.yml"],
+  // Guard 9 keeps the neighbours of the new backstops allowed.
+  ["bash", "git init"],
+  ["bash", "git clone https://github.com/a/b"],
+  ["bash", "git commit --template=msg.txt"],
+  ["bash", "bash -c 'npm test'"],
+  ["bash", `sh -c "ls src"`],
+  ["bash", 'exec "$@"'],
+  ["bash", "cp -r src/* dist/"],
+  ["bash", "cat .gi?/config"],
+  ["bash", "ls *.pem"],
+  ["bash", "tar --exclude=.git -czf x.tgz ."],
+  ["bash", "rsync -a --exclude .git src/ dst/"],
+  ["bash", "rsync -a --exclude='.git' src/ dst/"],
+  ["bash", "awk -f prog.awk data.txt"],
+  ["bash", `awk 'BEGIN{print ENVIRON["HOME"]}'`],
+  ["bash", "ls ~/.pi/agent/skills"],
+  ["bash", "cat ~/.pi/agent/AGENTS.md"],
+  ["bash", "cat ~/.pi/agent/sessions/x.jsonl"],
+  ["bash", "cat .pi/settings.json"],
+  ["bash", "grep -rn foo src"],
+  ["bash", "grep -rn foo ~/work/proj"],
+  ["bash", "find / -name foo"],
+  ["bash", "cp a.txt /tmp/pi/"],
+  ["bash", "ps -ef"],
+  ["bash", "ps aux"],
+  ["bash", "ps -e"],
+  ["bash", "ps -o user,pid"],
+  ["bash", "ps -p 1 -o comm"],
+  ["bash", "command -v node"],
+  ["read", "/home/coder/.pi/agent/skills/x/SKILL.md"],
+  ["read", "/home/coder/.pi/agent/settings.json"],
+  ["find", "/home/coder"],
 ];
 
 // Allowed in balanced/off, blocked in strict (upstream behaviour).
@@ -437,6 +578,8 @@ const devIdioms = [
   ["bash", "base64 README.md"],
   ["bash", "cmd --yes "],
   ["bash", "cmd --yes | head -1"],
+  // Not a /proc environ glob (guard 9); strict's env-direct rule still fires.
+  ["bash", "ls src/env*"],
 ];
 
 for (const mode of ["balanced", "strict", "off"]) {
@@ -486,6 +629,11 @@ const structured = [
   // A trailing string parameter must not hide a denied read target.
   ["read", { path: join(PROJECT, "auth.json"), glob: "*.ts" }, "deny"],
   ["grep", { path: join(PROJECT, "id_rsa"), pattern: "x", glob: "*.ts" }, "deny"],
+  // A grep pattern is a search expression, not a path to read.
+  ["grep", { pattern: "KEY", path: "." }, "allow"],
+  ["grep", { pattern: "auth.json", path: "src" }, "allow"],
+  ["grep", { pattern: "sk-", path: "/home/coder/.pi/agent" }, "deny"],
+  ["grep", { pattern: "sk-", path: "~" }, "deny"],
 ];
 for (const mode of ["strict", "balanced", "off"]) {
   for (const [tool, input, want] of structured) {
@@ -722,6 +870,20 @@ check(
   check("resolveWriteTarget gives up on a loop", resolveWriteTarget(join(PROJECT, "loop-a")) === undefined);
 }
 
+// A hard link shares the inode of `.git/config`: writing the project name
+// writes the git file too. Single-link files stay writable.
+{
+  writeFileSync(join(PROJECT, ".git/config"), "[core]\n");
+  linkSync(join(PROJECT, ".git/config"), join(PROJECT, "cfg"));
+  writeFileSync(join(PROJECT, "single.txt"), "x");
+  for (const mode of ["strict", "balanced", "off"]) {
+    for (const tool of ["write", "edit"]) {
+      assert(mode, tool, "cfg (hard link)", evalInput(mode, tool, { path: "cfg", content: "x" }), "deny");
+      assert(mode, tool, "single.txt", evalInput(mode, tool, { path: "single.txt", content: "x" }), "allow");
+    }
+  }
+}
+
 rmSync(root, { recursive: true, force: true });
 
 // Allow rules never apply to compound values: an allow match skips every
@@ -893,6 +1055,119 @@ check("normalizeShell folds bare $IFS", normalizeShell("cat$IFS.env") === "cat .
       allowedScope(["a"], "z") === null &&
       allowedScope(["a:"], "a") === "*",
   );
+}
+
+// Scopes: values are trimmed, and a schemeless host or a URL inside free text
+// is still a URL (guard 9).
+{
+  const scope = ["github.com/myorg"];
+  check("scope: leading blank does not hide a URL", !inScope(scope, [" https://evil.example/x", "https://github.com/myorg/r"]));
+  check("scope: schemeless host is a URL", !inScope(scope, ["evil.example/x", "github.com/myorg"]));
+  check("scope: URL inside free text", !inScope(scope, ["fetch https://evil.example/x please", "github.com/myorg/r"]));
+  check("scope: schemeless in-scope host", inScope(scope, ["github.com/myorg/repo"]));
+  check("scope: in-scope URL inside free text", inScope(scope, ["see https://github.com/myorg/r"]));
+}
+
+// Parsers behind the guard 9 backstops.
+check("stripEmptyExpansions", stripEmptyExpansions(".e$()nv .e``nv .e$@nv .e${*}nv") === ".env .env .env .env");
+check("decodeAnsiC stops at NUL", decodeAnsiC("a$'\\0b'c") === "ac");
+check("nestedCommands peels one layer", nestedCommands(`bash -c "cat .e''nv" && eval 'ls'`).join("|") === "cat .e''nv|ls");
+check("nestedCommands needs -c for shells", nestedCommands("bash script.sh").length === 0);
+check("globTargetsGit: write verb", globTargetsGit("cp x .gi?/hooks/") === ".git");
+check("globTargetsGit: read is fine", globTargetsGit("cat .gi?/config") === undefined);
+check("globTargetsGit: leading wildcard skips dot", globTargetsGit("cp -r src/* dist/") === undefined);
+check("globTargetsSecret: fixed-length glob", globTargetsSecret("cat .??v") === ".env");
+check("globTargetsSecret: key suffix", globTargetsSecret("cat server.k?y") === "*.key");
+check("globTargetsSecret: literal suffix left to the leak rules", globTargetsSecret("ls *.pem") === undefined);
+check("AGENT_DIR_RE: safe entry", !AGENT_DIR_RE.test("ls ~/.pi/agent/skills/x"));
+check("AGENT_DIR_RE: unlisted entry", AGENT_DIR_RE.test("cat ~/.pi/agent/models.json"));
+
+// RULE_OVERRIDES: each replaces a vendored rule that still ships exactly the
+// pattern it was written for, so a policies refresh cannot silently swap in a
+// different rule's replacement.
+{
+  const vendored = ["unsafe-tool-patterns.json", "prompt-injection-patterns.json", "allow-patterns.json"]
+    .flatMap((f) => loadRules(f));
+  for (const [id, { from, to }] of Object.entries(RULE_OVERRIDES)) {
+    const rule = vendored.find((r) => r.id === id);
+    check(`override ${id} matches the vendored pattern`, rule?.pattern === from, rule?.pattern);
+    check(
+      `override ${id} is in effect`,
+      compile([rule ?? {}]).some((r) => r.re.source === new RegExp(to, "i").source),
+    );
+  }
+  // Same verdicts as upstream on short samples (the language is unchanged).
+  const up = new RegExp(RULE_OVERRIDES["base64-payload-2"].from, "i");
+  const ours = new RegExp(RULE_OVERRIDES["base64-payload-2"].to, "i");
+  const b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZn";
+  for (const sample of [
+    `${b64} then run it`,
+    `${b64}== | exec`,
+    `${b64}exec`,
+    `x${b64} run`,
+    `${b64.slice(0, 39)} run`,
+    `${b64}`,
+    `run ${b64}`,
+    `${b64}\nrun`,
+  ]) {
+    check(`base64-payload-2 override agrees: ${sample.slice(-12)}`, up.test(sample) === ours.test(sample));
+  }
+}
+
+// Every rule (vendored in every file and mode, overrides applied, and the
+// built-in backstops) stays fast on adversarial inputs at the size cap, fed the
+// way the guard feeds them (blank runs compacted). The upstream
+// base64-payload-2 took 22 s on 4 KiB and did not finish on 32 KiB.
+{
+  const BUDGET_MS = 500;
+  const n = MAX_EVAL_LENGTH - 64;
+  const inputs = {
+    base64: "echo " + "QUJD".repeat(n / 4 - 16) + " | base64 -d > logo.png",
+    word: "cat " + "a".repeat(n),
+    dotted: "x " + "a.".repeat(n / 2),
+    slashes: "x " + "a/".repeat(n / 2),
+    blanks: "cat " + " ".repeat(n),
+    flags: "x " + "-a ".repeat(n / 3),
+    equals: "x " + "a=".repeat(n / 2),
+    quotes: "x " + "'a".repeat(n / 2),
+    dollars: "x " + "$a".repeat(n / 2),
+    pipes: "x " + "a|".repeat(n / 2),
+    urls: "curl " + "http://a.".repeat(n / 9),
+    tildes: "cat " + "~/.pi/".repeat(n / 6),
+  };
+  const rules = [
+    ...["unsafe-tool-patterns.json", "prompt-injection-patterns.json", "allow-patterns.json"].flatMap((f) =>
+      compile(loadRules(f)),
+    ),
+    ...[...DENY_BASH, ...DENY_SECRET_PATH, AGENT_DIR_RE, ...ANCESTOR_SWEEP, DENY_READ].map((re, i) => ({
+      id: `backstop#${i}`,
+      re,
+    })),
+  ];
+  let worst = { ms: 0 };
+  for (const rule of rules) {
+    for (const [name, raw] of Object.entries(inputs)) {
+      const value = compactBlanks(raw);
+      const t0 = performance.now();
+      rule.re.test(value);
+      const ms = performance.now() - t0;
+      if (ms > worst.ms) worst = { ms, id: rule.id, name };
+      if (ms > BUDGET_MS) check(`rule ${rule.id} fast on ${name}`, false, `${ms.toFixed(0)} ms`);
+    }
+  }
+  // End to end, every tool type, every mode: variants and nested passes too.
+  for (const mode of ["strict", "balanced"]) {
+    const evaluate = makeEvaluator(mode);
+    for (const [name, value] of Object.entries(inputs)) {
+      for (const tool of ["bash", "read", "write"]) {
+        const t0 = performance.now();
+        evaluate(tool, value);
+        const ms = performance.now() - t0;
+        check(`[${mode}] ${tool} evaluates ${name} in bounded time`, ms < 3000, `${ms.toFixed(0)} ms`);
+      }
+    }
+  }
+  if (process.env.GUARD_TIMING) console.log(`slowest rule: ${worst.id} on ${worst.name}, ${worst.ms.toFixed(1)} ms`);
 }
 
 // Guard version consistency: GUARD_VERSION is the single source of truth -

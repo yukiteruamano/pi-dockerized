@@ -13,6 +13,11 @@ IMAGE_REPO="${IMAGE_NAME%%:*}"
 REGISTRY_IMAGE="${PI_DOCKERIZED_REGISTRY_IMAGE:-ghcr.io/yukiteruamano/pi-dockerized}"
 GUARD_DIR_IN_IMAGE="/home/coder/.pi/agent/extensions/pi-security-guard"
 
+# Hardening for the short-lived inspection containers (smoke test, version
+# probes): they run images that are not trusted yet (a candidate, or one
+# pulled with --no-verify), so no network, no capabilities, no setuid gains.
+AUX_RUN_ARGS=(--rm --network none --cap-drop=ALL --security-opt no-new-privileges:true -e PI_SKIP_VERSION_CHECK=1)
+
 # Value of one label on an image ("" when the image or label is missing).
 # Usage: image_label <image> <label>
 image_label() {
@@ -68,6 +73,9 @@ PI_CODING_AGENT_DIR="$d" pi list >/dev/null 2>&1 || { echo "pi list fails on a s
 # Sandbox invariants: no privilege escalation binary, and a host settings.json
 # carrying anything but preferences must be rejected.
 command -v sudo >/dev/null 2>&1 && { echo "sudo must not exist in the image"; exit 1; }
+s=$(find / -xdev -perm /6000 -type f -print -quit 2>/dev/null)
+[ -z "$s" ] || { echo "setuid/setgid binary left in the image: $s"; exit 1; }
+[ "${JITI_FS_CACHE:-}" = false ] || { echo "JITI_FS_CACHE must be false"; exit 1; }
 d2=$(mktemp -d)
 node /usr/local/lib/pi-dockerized/ext-agent.mjs seed "$d2" >/dev/null || { echo "ext-agent seed failed"; exit 1; }
 jq ". + {piDockerizedEvil: true}" "$d2/settings.json" > "$d2/loose.json" && mv "$d2/loose.json" "$d2/settings.json"
@@ -78,7 +86,7 @@ echo "$v"
 # Usage: smoke_test_image <image>
 smoke_test_image() {
     local image="$1" out
-    if ! out=$(docker run --rm --entrypoint bash "$image" -c "$SMOKE_SCRIPT" 2>&1); then
+    if ! out=$(docker run "${AUX_RUN_ARGS[@]}" --entrypoint bash "$image" -c "$SMOKE_SCRIPT" 2>&1); then
         print_error "Smoke test failed for $image:"
         printf '%s\n' "$out" >&2
         return 1
@@ -86,7 +94,7 @@ smoke_test_image() {
     # Sessions run as the host uid, which is not always the image's 1000: the
     # guard must also be locked for any other uid in the coder group.
     local lock_out
-    if ! lock_out=$(docker run --rm --user 4242:4242 --group-add coder \
+    if ! lock_out=$(docker run "${AUX_RUN_ARGS[@]}" --user 4242:4242 --group-add coder \
         --entrypoint /usr/local/lib/pi-dockerized/lock-check.sh "$image" 2>&1); then
         print_error "Smoke test failed for $image (uid 4242):"
         printf '%s\n' "$lock_out" >&2
@@ -98,7 +106,7 @@ smoke_test_image() {
 # Guard version baked into an image ("" when it cannot be read).
 # Usage: image_guard_version <image>
 image_guard_version() {
-    docker run --rm --entrypoint node "$1" "$GUARD_DIR_IN_IMAGE/selftest.mjs" --version 2>/dev/null |
+    docker run "${AUX_RUN_ARGS[@]}" --entrypoint node "$1" "$GUARD_DIR_IN_IMAGE/selftest.mjs" --version 2>/dev/null |
         tail -n 1 | tr -cd '0-9'
 }
 
@@ -375,7 +383,7 @@ show_version() {
     local built info line guard="" policies="" pi=""
     built=$(image_label "$IMAGE_NAME" org.opencontainers.image.version)
     # shellcheck disable=SC2016 # expanded inside the container, not here
-    info=$(docker run --rm --entrypoint bash "$IMAGE_NAME" -c '
+    info=$(docker run "${AUX_RUN_ARGS[@]}" --entrypoint bash "$IMAGE_NAME" -c '
         d=/home/coder/.pi/agent/extensions/pi-security-guard
         printf "guard=%s\npolicies=%s\npi=%s\n" \
             "$(node "$d/selftest.mjs" --version 2>/dev/null)" \

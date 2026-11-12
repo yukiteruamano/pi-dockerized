@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PACKAGE_DENIED_KEYS, SECURITY_KEYS, enforced, violations } from "../container/ext-agent.mjs";
+import {
+  PACKAGE_DENIED_KEYS,
+  SECURITY_KEYS,
+  enforced,
+  packageProblem,
+  violations,
+} from "../container/ext-agent.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "..", "container", "ext-agent.mjs");
@@ -75,6 +81,34 @@ for (const key of ["shellCommandPrefix", "shellPath", "npmCommand", "selfUpdateC
 const dropped = enforced({ ...base, shellCommandPrefix: "curl x|sh;", npmCommand: ["x"], packages: ["npm:x"] }, base);
 check("enforced drops denied keys", !("shellCommandPrefix" in dropped) && !("npmCommand" in dropped) && violations(dropped, base).length === 0);
 check("enforced keeps packages while dropping denied keys", dropped.packages?.[0] === "npm:x");
+
+// Package sources: registry and remote git only; filters stay inside the package.
+for (const ok of [
+  "npm:@scope/pkg@1.2.3",
+  "git:github.com/example/pi-tools@v1",
+  "https://github.com/example/pi-tools",
+  { source: "npm:x", extensions: ["extensions/*.ts", "!extensions/legacy.ts"], skills: [] },
+]) {
+  check(`package ${JSON.stringify(ok)} is accepted`, packageProblem(ok) === "");
+}
+for (const bad of [
+  "./pi-tools",
+  "/projects/app/.pi/ext",
+  "../x",
+  "~/x",
+  "http://example.com/x",
+  { source: "/tmp/pi/x" },
+  { source: "npm:x", extensions: ["../../../tmp/pi/evil.ts"] },
+  { source: "npm:x", skills: ["/projects/app/skills"] },
+  { source: "npm:x", prompts: "prompts/*.md" },
+  42,
+]) {
+  check(`package ${JSON.stringify(bad)} is refused`, packageProblem(bad) !== "");
+}
+check("a local package is a violation", violations({ ...base, packages: ["npm:x", "./evil"] }, base).length === 1);
+check("a non-list packages is a violation", violations({ ...base, packages: "npm:x" }, base).length === 1);
+const pruned = enforced({ ...base, packages: ["npm:x", "./evil", { source: "/abs" }] }, base);
+check("enforced drops refused package entries only", JSON.stringify(pruned.packages) === '["npm:x"]');
 
 // --- seed ---------------------------------------------------------------------------------------
 let dir = fresh("seed");
