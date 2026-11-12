@@ -685,10 +685,34 @@ bin audit --clear >/dev/null 2>&1 || fail "audit --clear"
 [ ! -s "$AGENT/audit.log" ] || fail "audit --clear must empty the log"
 
 # --- config command (profiles, get/set) -----------------------------------------------------------------
+# Migration: profiles created implicitly by older versions (directory present,
+# config file sometimes missing) must keep working — the existence check is on
+# the directory, which every old flow created. Only truly unknown names fail.
+mkdir -p "$TMP/root/profiles/legacy/home/.pi/agent" # old profile, no config file
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile legacy config path 2>&1)" ||
+    fail "a pre-existing profile from an older version must keep working"
+assert_eq "$out" "$TMP/root/profiles/legacy/config" "legacy profiles resolve to their own config"
+rm -r "$TMP/root/profiles/legacy"
+
+# A profile must exist before it can be used: a typo must not silently run on
+# a fresh empty profile with default settings.
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config path 2>&1)" &&
+    fail "an unknown profile must be refused"
+assert_contains "$out" "does not exist" "the unknown-profile error names the problem"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create work >/dev/null 2>&1 ||
+    fail "config profiles create"
+[ -f "$TMP/root/profiles/work/config" ] || fail "profiles create must seed the profile's config file"
+[ -d "$TMP/root/profiles/work/home/.pi/agent" ] || fail "profiles create must seed the profile's state tree"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create work >/dev/null 2>&1 &&
+    fail "creating an existing profile must fail"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create default >/dev/null 2>&1 &&
+    fail "the reserved profile name 'default' must be refused"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config path 2>&1)"
 assert_eq "$out" "$TMP/root/profiles/work/config" "--profile selects its own config directory"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path 2>&1)"
 assert_eq "$out" "$TMP/root/config" "the default profile lives in the root"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile default config path 2>&1)"
+assert_eq "$out" "$TMP/root/config" "--profile default names the root profile"
 env -u CONFIG_DIR -u PI_HOME "$BIN" --profile 'Bad Name' config path >/dev/null 2>&1 && fail "invalid profile names must be rejected"
 env -u CONFIG_DIR -u PI_HOME "$BIN" --profile '../evil' config path >/dev/null 2>&1 && fail "path traversal in a profile name must be rejected"
 env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config set network bridge >/dev/null 2>&1 || fail "config set in a profile"
@@ -696,6 +720,29 @@ out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile 
 assert_eq "$out" "bridge" "profile settings are stored separately"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles 2>&1)"
 assert_contains "$out" "work" "config profiles lists the existing profiles"
+
+# setting.default_profile (root config) picks the profile when --profile is
+# not given; a broken value is an error, --profile default escapes it.
+printf 'setting.default_profile=work\n' >>"$TMP/root/config"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path 2>&1)"
+assert_eq "$out" "$TMP/root/profiles/work/config" "setting.default_profile selects the profile"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile default config path 2>&1)"
+assert_eq "$out" "$TMP/root/config" "--profile default escapes setting.default_profile"
+sed -i 's/^setting\.default_profile=work$/setting.default_profile=nope/' "$TMP/root/config"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path >/dev/null 2>&1 &&
+    fail "a default_profile pointing at a missing profile must be an error"
+sed -i '/^setting\.default_profile=/d' "$TMP/root/config"
+
+# profiles remove deletes the whole tree (confirmation required unless --yes).
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create scratch >/dev/null 2>&1 ||
+    fail "profiles create scratch"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove scratch </dev/null 2>&1)"
+[ -d "$TMP/root/profiles/scratch" ] || fail "profiles remove without confirmation must not delete"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove scratch --yes >/dev/null 2>&1 ||
+    fail "profiles remove --yes"
+[ ! -d "$TMP/root/profiles/scratch" ] || fail "profiles remove --yes must delete the profile tree"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove default --yes >/dev/null 2>&1 &&
+    fail "the root profile must not be removable"
 bin config set network lan >/dev/null 2>&1 && fail "bin config set must reject invalid values"
 bin config get nosuchkey >/dev/null 2>&1 && fail "bin config get must reject unknown keys"
 out="$(bin config allow path 2>&1)"

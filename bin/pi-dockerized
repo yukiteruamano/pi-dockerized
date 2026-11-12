@@ -56,6 +56,52 @@ if [ -n "${PI_DOCKERIZED_PROFILE:-}" ] && ! [[ "$PI_DOCKERIZED_PROFILE" =~ ^[a-z
     exit 1
 fi
 
+# Profile resolution order: --profile / PI_DOCKERIZED_PROFILE (explicit) >
+# profile.map (per project, applied later in main) > setting.default_profile
+# (root config). `--profile default` names the root profile, escaping an
+# inherited default_profile. PI_PROFILE_SOURCE tells the mapping step whether
+# the choice was explicit. Exit code 3 = bad host config (E_CONFIG).
+_pi_config_root="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
+PI_PROFILE_SOURCE=none
+if [ -n "${PI_DOCKERIZED_PROFILE:-}" ]; then
+    PI_PROFILE_SOURCE=explicit
+    if [ "$PI_DOCKERIZED_PROFILE" = default ]; then
+        unset PI_DOCKERIZED_PROFILE
+    fi
+else
+    # setting.default_profile is read from the ROOT config only: a profile
+    # must not redirect to another profile.
+    _default_profile="$(sed -n 's/^[[:space:]]*setting\.default_profile[[:space:]]*=[[:space:]]*//p' \
+        "$_pi_config_root/config" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+    if [ -n "$_default_profile" ]; then
+        if ! [[ "$_default_profile" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+            echo "pi-dockerized: invalid setting.default_profile '$_default_profile' in $_pi_config_root/config" >&2
+            exit 3
+        fi
+        if [ "$_default_profile" != default ]; then
+            export PI_DOCKERIZED_PROFILE="$_default_profile"
+            PI_PROFILE_SOURCE=default
+        fi
+    fi
+    unset _default_profile
+fi
+export PI_PROFILE_SOURCE
+
+# A named profile must already exist: a typo must not silently run a session
+# with a fresh empty profile and default settings. Only `install` creates one
+# implicitly; `config profiles create NAME` is the explicit path.
+if [ -n "${PI_DOCKERIZED_PROFILE:-}" ] && [ ! -d "$_pi_config_root/profiles/$PI_DOCKERIZED_PROFILE" ] &&
+    [ "${1:-}" != install ]; then
+    echo "pi-dockerized: profile '$PI_DOCKERIZED_PROFILE' does not exist." >&2
+    if [ "$PI_PROFILE_SOURCE" = default ]; then
+        echo "pi-dockerized: it is set as setting.default_profile; fix it with 'pi-dockerized --profile default config set default_profile <name>'." >&2
+    else
+        echo "pi-dockerized: create it with 'pi-dockerized config profiles create $PI_DOCKERIZED_PROFILE' or 'pi-dockerized --profile $PI_DOCKERIZED_PROFILE install'." >&2
+    fi
+    exit 3
+fi
+unset _pi_config_root
+
 # Shared configuration, logging (print_*) and command modules.
 source "$REPO_ROOT/lib/config-lib.sh"
 for _cmd_module in help session extensions image update config; do
@@ -94,6 +140,14 @@ main() {
 
     local command="${1:-run}"
     shift || true
+
+    # Session commands may be mapped to a profile by project directory
+    # (profile.map in the root config); re-execs with --profile when so.
+    case "$command" in
+    run | shell | exec)
+        maybe_switch_mapped_profile "$command" "$@"
+        ;;
+    esac
 
     case "$command" in
     run)

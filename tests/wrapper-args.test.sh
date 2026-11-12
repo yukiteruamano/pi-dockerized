@@ -38,6 +38,8 @@ assert_not_contains() {
     esac
 }
 
+assert_eq() { [ "$1" = "$2" ] || fail "$3 (want '$2', got '$1')"; }
+
 export HOME="$TMP/home"
 export CONFIG_DIR="$TMP/cfg"
 export PI_HOME="$CONFIG_DIR/home"
@@ -138,6 +140,37 @@ assert_contains "$common" "PI_CODING_AGENT_DIR=/home/coder/.pi/agent" "agent dir
 assert_contains "$common" "PI_SKIP_VERSION_CHECK=1" "self-update check must be disabled"
 assert_contains "$common" "PI_DOCKERIZED_POLICY=balanced" "policy mode must be forwarded"
 assert_not_contains "$common" "OPENCODE_CONFIG_CONTENT" "legacy OpenCode config must not be used"
+
+# Process cap: on by default (fork bombs are contained by the kernel), tunable,
+# removable only with the explicit "unlimited".
+assert_contains "$common" "--pids-limit 4096" "the default pids limit must be set"
+assert_contains "$common" "--label pi-dockerized.profile=default" "sessions must carry the profile label"
+PIDS_LIMIT=1024
+build_common_docker_args
+assert_contains " ${DOCKER_COMMON_ARGS[*]} " "--pids-limit 1024" "setting.pids_limit must be honored"
+PIDS_LIMIT=unlimited
+build_common_docker_args
+assert_not_contains " ${DOCKER_COMMON_ARGS[*]} " "--pids-limit" "pids_limit=unlimited must drop the cap"
+PIDS_LIMIT=4096
+(_apply_setting pids_limit "not-a-number" 2>/dev/null) && fail "an invalid pids_limit must be refused"
+_apply_setting pids_limit unlimited 2>/dev/null || fail "pids_limit=unlimited must be accepted"
+PIDS_LIMIT=4096
+
+# --- profile.map resolution ----------------------------------------------------
+mkdir -p "$PI_CONFIG_ROOT" "$HOME/work/acme/app" "$HOME/oss"
+cat >"$PI_CONFIG_ROOT/config" <<EOF
+profile.map.work=~/work:acme
+profile.map.deep=~/work/acme/app:app-profile
+profile.map.oss=~/oss:default
+profile.map.bad=~/elsewhere:Bad Name
+profile.map.broken=no-separator
+EOF
+assert_eq "$(profile_for_dir "$HOME/work/proj" 2>/dev/null)" "acme" "profile.map must match by prefix"
+assert_eq "$(profile_for_dir "$HOME/work/acme/app/src" 2>/dev/null)" "app-profile" "the longest matching path must win"
+assert_eq "$(profile_for_dir "$HOME/oss/tool" 2>/dev/null)" "default" "mapping back to the root profile must work"
+assert_eq "$(profile_for_dir "$HOME/elsewhere/x" 2>/dev/null)" "" "an invalid mapped profile name must be ignored"
+assert_eq "$(profile_for_dir "$HOME" 2>/dev/null)" "" "unmapped directories must resolve to nothing"
+rm -f "$PI_CONFIG_ROOT/config"
 
 # --- Env-file containment ----------------------------------------------------
 # A secrets file outside $CONFIG_DIR must be refused.
@@ -432,7 +465,6 @@ fi
 
 # --- GnuPG relay dir and socket overrides ------------------------------------------------
 out="$(env -u PI_DOCKERIZED_TEST GPG_RELAY_DIR="$HOME/work" bash -c 'source "$1/lib/config-lib.sh"; printf %s "$GPG_RELAY_DIR"' _ "$REPO_DIR")"
-assert_eq() { [ "$1" = "$2" ] || fail "$3 (want '$2', got '$1')"; }
 assert_eq "$out" "$CONFIG_DIR/gnupg-relay" "GPG_RELAY_DIR from the environment must be ignored outside test mode"
 out="$(env -u PI_DOCKERIZED_TEST GPG_AGENT_SOCKET="$TMP/owned.sock" bash -c 'source "$1/lib/config-lib.sh"; resolve_gpg_agent_socket' _ "$REPO_DIR" 2>/dev/null)"
 assert_not_contains "$out" "$TMP/owned.sock" "GPG_AGENT_SOCKET must be ignored outside test mode"

@@ -170,6 +170,8 @@ NETWORK="host"                     # Container network: host (default, simple) |
 SECURITY_POLICY="balanced"         # Security policy mode: strict | balanced | off
 MEMORY=""                          # Optional container memory limit (docker --memory), e.g. 4g
 CPUS=""                            # Optional container CPU limit (docker --cpus), e.g. 2
+PIDS_LIMIT="4096"                  # Container process cap (docker --pids-limit); "unlimited" disables it
+DEFAULT_PROFILE=""                 # Root config only: profile used when --profile is not given
 ENV_FILE=""                        # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
 THEME=""                           # Optional Pi theme name (built-in, e.g. system); empty = Pi default
 MODEL=""                           # Optional Pi model selection (--model), empty = Pi default
@@ -283,6 +285,35 @@ canonical_path() {
 path_within() {
     local child="${1%/}" parent="${2%/}"
     [ "$child" = "$parent" ] || [[ "$child" == "$parent"/* ]]
+}
+
+# Profile mapped to a directory by `profile.map.<key>=<path>:<profile>` lines
+# in the ROOT config (never a profile's: mappings must not chain, and a file
+# inside a project must never pick the profile). Longest matching path wins.
+# Prints the profile name ("default" = the root profile), or nothing.
+# Usage: mapped=$(profile_for_dir "/abs/dir")
+profile_for_dir() {
+    local dir="$1" best="" best_len=-1 value path prof
+    [ -f "$PI_CONFIG_ROOT/config" ] || return 0
+    while IFS= read -r value; do
+        value="${value#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        path="${value%:*}"
+        prof="${value##*:}"
+        [ "$path" = "$value" ] && continue # no <path>:<profile> separator
+        if [ "$prof" != default ] && ! [[ "$prof" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+            config_warning "Ignoring profile.map entry with invalid profile '$prof'"
+            continue
+        fi
+        path=$(canonical_path "$(expand_tilde "$path")")
+        case "$path" in /*) ;; *) continue ;; esac
+        if path_within "$dir" "$path" && [ "${#path}" -gt "$best_len" ]; then
+            best="$prof"
+            best_len=${#path}
+        fi
+    done < <(grep '^[[:space:]]*profile\.map\.[A-Za-z0-9_.-]*[[:space:]]*=' "$PI_CONFIG_ROOT/config" 2>/dev/null)
+    printf '%s' "$best"
 }
 
 # Check if Docker image exists locally

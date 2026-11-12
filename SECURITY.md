@@ -40,6 +40,9 @@ baked security extension (`extensions/pi-security-guard/`).
 | SSH agent forwarding (opt-in) | `setting.ssh_agent_support=true` forwards only `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys (`id_*`, `*.pem`, `*.key`) are never mounted, and a custom mount of `~/.ssh` is refused |
 | GnuPG agent forwarding (opt-in) | `setting.gpg_agent_support=true` mirrors only the public keyring (`pubring.kbx` / `public-keys.d`) and forwards the host `gpg-agent` socket (preferring the restricted `S.gpg-agent.extra`); `private-keys-v1.d/` is never copied or mounted, and a custom mount of `~/.gnupg` is refused |
 | No self-update | `PI_SKIP_VERSION_CHECK=1` and the guard block `pi update` |
+| Credential store | `pi auth login`/`pi auth logout` are blocked in sessions: `auth.json` is bind-mounted read-write, so a session could otherwise log the user out or plant foreign credentials. Log in from the host |
+| Process cap | Containers run with `--pids-limit` (default 4096, `setting.pids_limit`): fork bombs hit the kernel limit, not a pattern match |
+| Profile isolation | Each `--profile` has its own config, secrets file, keys and state under `~/.config/pi-dockerized/profiles/`; profiles are created explicitly (an unknown profile is an error, so a typo cannot run on a fresh default-config profile), and the project→profile mapping (`profile.map.*`) lives only in the host's root config, never in the repository |
 
 ## Known limitations
 

@@ -13,7 +13,7 @@
 SETTING_KEYS=(
     ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
     gpg_relay docker_socket network security_policy allowed_tools verify_updates
-    memory cpus env_file theme model
+    memory cpus pids_limit env_file theme model default_profile
 )
 
 # ============================================
@@ -86,6 +86,10 @@ init_config_file() {
 # setting.memory=4g
 # setting.cpus=2
 
+# Max processes in the container (docker --pids-limit). Contains fork bombs at
+# the kernel instead of pattern-matching them. Empty = 4096; unlimited = no cap.
+# setting.pids_limit=4096
+
 # Secrets file (dotenv KEY=VALUE lines) loaded with docker --env-file.
 # Must live under ~/.config/pi-dockerized/ (never mounted). Create it with
 # `install -m 600 /dev/null ~/.config/pi-dockerized/env` and add provider keys
@@ -97,6 +101,17 @@ init_config_file() {
 
 # Startup model selection (passed as `pi --model`). Empty = Pi default.
 # setting.model=sonnet
+
+# Profile used when --profile is not given. Read from the ROOT config only
+# (~/.config/pi-dockerized/config); ignored inside a profile. Escape back to
+# the root profile with `--profile default`.
+# setting.default_profile=
+
+# Per-project profile mapping (ROOT config only): sessions started in <path>
+# (or below) use <profile>; the longest matching path wins and an explicit
+# --profile always takes precedence. The key after `profile.map.` is a free
+# label, like mount names.
+#   profile.map.work=~/work:acme
 
 # Custom volume mounts (read-only by default)
 # Format: mount.<name>=<host_path>:<container_path>[:rw]
@@ -139,6 +154,8 @@ _setting_spec() {
     allowed_tools) echo "ALLOWED_TOOLS re ^[A-Za-z0-9_.:,+*=-]*$" ;;
     memory) echo "MEMORY re ^([0-9]+[bBkKmMgG])?$" ;;
     cpus) echo "CPUS re ^([0-9]+(\\.[0-9]+)?)?$" ;;
+    pids_limit) echo "PIDS_LIMIT re ^([1-9][0-9]{0,5}|unlimited)?$" ;;
+    default_profile) echo "DEFAULT_PROFILE re ^([a-z0-9][a-z0-9_-]{0,31})?$" ;;
     theme) echo "THEME re ^[A-Za-z0-9_-]*$" ;;
     model) echo "MODEL re ^[A-Za-z0-9._:/@-]*$" ;;
     env_file) echo "ENV_FILE any" ;;
@@ -163,6 +180,8 @@ reset_settings() {
     ALLOWED_TOOLS=""
     MEMORY=""
     CPUS=""
+    PIDS_LIMIT="4096"
+    DEFAULT_PROFILE=""
     ENV_FILE=""
     THEME=""
     MODEL=""
@@ -257,6 +276,15 @@ load_config() {
             # The host-environment passthrough was removed; secrets now live in
             # setting.env_file (see migrate_legacy_env_vars).
             [ -n "$value" ] && config_warning "Ignoring legacy '${key#env.}' (env.* passthrough was removed); move the value to setting.env_file instead."
+            ;;
+        profile.map.*)
+            # Project→profile mapping: consumed by bin/pi-dockerized before
+            # this library loads (profile_for_dir, root config only). Accepted
+            # here so the loader does not flag it, with a format check.
+            case "$value" in
+            *:*) ;;
+            *) [ -n "$value" ] && config_warning "config line $lineno: profile.map needs <path>:<profile> (ignored)" ;;
+            esac
             ;;
         setting.*)
             _apply_setting "${key#setting.}" "$value"

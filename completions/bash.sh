@@ -20,7 +20,7 @@ _pi_dockerized() {
     prev="${COMP_WORDS[COMP_CWORD - 1]}"
     opts="run exec shell auth models mcp extensions stats doctor audit ps stop install uninstall upgrade update build pull rollback version config clean help --profile --help -h"
     local session_flags="--untrusted --policy --network --timeout --resume --list --dir"
-    local settings="ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket network security_policy allowed_tools verify_updates memory cpus env_file theme model"
+    local settings="ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket network security_policy allowed_tools verify_updates memory cpus pids_limit env_file theme model default_profile"
 
     case "${prev}" in
     --policy)
@@ -63,6 +63,21 @@ _pi_dockerized() {
     get | set)
         if _pi_has_word config; then
             mapfile -t COMPREPLY < <(compgen -W "${settings}" -- "${cur}")
+            return 0
+        fi
+        ;;
+    profiles)
+        if _pi_has_word config; then
+            mapfile -t COMPREPLY < <(compgen -W "list create remove" -- "${cur}")
+            return 0
+        fi
+        ;;
+    remove)
+        if _pi_has_word profiles; then
+            local root="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles"
+            if [ -d "$root" ]; then
+                mapfile -t COMPREPLY < <(compgen -W "$(ls "$root")" -- "${cur}")
+            fi
             return 0
         fi
         ;;

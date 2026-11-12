@@ -66,7 +66,86 @@ list_profiles() {
         found=true
         if [ "$name" = "$PI_PROFILE" ]; then echo "$name (active)"; else echo "$name"; fi
     done
-    [ "$found" = true ] || print_info "No named profiles yet: use '$0 --profile NAME install' to create one."
+    [ "$found" = true ] || print_info "No named profiles yet: use '$0 config profiles create NAME' to create one."
+}
+
+# Validate a profile name for create/remove ("default" is the root profile).
+_validate_profile_name() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        print_error "Usage: $0 config profiles [list|create NAME|remove NAME [--yes]]"
+        return 1
+    fi
+    if [ "$name" = default ]; then
+        print_error "'default' is the root profile; it always exists and cannot be removed."
+        return 1
+    fi
+    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+        print_error "Invalid profile name '$name' (use a-z, 0-9, - or _, up to 32 characters)."
+        return 1
+    fi
+}
+
+# `config profiles [list|create NAME|remove NAME [--yes]]`: named profiles are
+# whole separate config trees (config, secrets file, keys, sessions) under
+# $PI_CONFIG_ROOT/profiles/. Creation is explicit so a typo in --profile can
+# never silently run a session on a fresh empty profile.
+manage_profiles() {
+    local action="${1:-list}" name="${2:-}" dir
+    case "$action" in
+    list)
+        list_profiles
+        ;;
+    create)
+        _validate_profile_name "$name" || exit "$E_USAGE"
+        dir="$PI_CONFIG_ROOT/profiles/$name"
+        if [ -d "$dir" ]; then
+            print_error "Profile '$name' already exists."
+            exit "$E_USAGE"
+        fi
+        # Seed the profile's own config file and state tree, exactly where the
+        # wrapper will look for them when run with --profile NAME.
+        (
+            CONFIG_DIR="$dir"
+            CONFIG_FILE="$dir/config"
+            PI_HOME="$dir/home"
+            EXT_AGENT_DIR="$PI_HOME/.pi/ext-agent"
+            init_config_file && ensure_pi_dirs
+        ) || exit 1
+        print_success "Created profile '$name' at $dir"
+        print_info "Configure it with '$0 --profile $name install' (keys, settings) or '$0 --profile $name config edit'."
+        ;;
+    remove)
+        _validate_profile_name "$name" || exit "$E_USAGE"
+        dir="$PI_CONFIG_ROOT/profiles/$name"
+        if [ ! -d "$dir" ]; then
+            print_error "Profile '$name' does not exist."
+            exit "$E_USAGE"
+        fi
+        if docker ps --filter "label=pi-dockerized.profile=$name" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+            print_error "Profile '$name' has running sessions; stop them first ('$0 ps')."
+            exit 1
+        fi
+        if [ "${3:-}" != "--yes" ]; then
+            local answer=""
+            printf "Delete profile '%s' and ALL its state (config, secrets, sessions) at %s? [y/N] " "$name" "$dir"
+            read -r answer || true
+            case "$answer" in
+            y | Y | yes | YES) ;;
+            *)
+                print_info "Aborted."
+                return 0
+                ;;
+            esac
+        fi
+        rm -rf -- "$dir"
+        print_success "Removed profile '$name'."
+        ;;
+    *)
+        print_error "Usage: $0 config profiles [list|create NAME|remove NAME [--yes]]"
+        exit "$E_USAGE"
+        ;;
+    esac
 }
 
 # Function to show or edit configuration
@@ -127,7 +206,7 @@ show_config() {
         config_agent_file allow "${1:-path}"
         ;;
     profiles)
-        list_profiles
+        manage_profiles "$@"
         ;;
     *)
         print_error "Unknown config subcommand: $subcommand"
@@ -258,6 +337,7 @@ show_audit() {
     summary)
         if [ -s "$log" ]; then
             grep -o '"rule":"[^"]*"' "$log" | sort | uniq -c | sort -rn | strip_control_chars
+            _audit_hint
         else
             print_info "No blocked calls recorded."
         fi
@@ -265,9 +345,16 @@ show_audit() {
     *)
         if [ -s "$log" ]; then
             tail -n "$count" "$log" | strip_control_chars
+            _audit_hint
         else
             print_info "No blocked calls recorded."
         fi
         ;;
     esac
+}
+
+# One-line orientation after audit listings, on stderr so the JSONL/summary
+# output stays pipeable.
+_audit_hint() {
+    print_info "pi-policy/* rules accept host allow rules ('$0 config allow edit'); backstop/* rules are built-in and do not. '$0 audit --explain [N]' explains one entry." >&2
 }

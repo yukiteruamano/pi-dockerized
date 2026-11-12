@@ -360,6 +360,7 @@ print_config() {
     echo "  Verify updates:     $VERIFY_UPDATES"
     echo "  Memory:             ${MEMORY:-<none>}"
     echo "  CPUs:               ${CPUS:-<none>}"
+    echo "  Pids limit:         ${PIDS_LIMIT:-4096}"
     echo "  Secrets file:       ${ENV_FILE:-<none>}"
     echo "  Theme:              ${THEME:-<default>}"
     echo "  Model:              ${MODEL:-<default>}"

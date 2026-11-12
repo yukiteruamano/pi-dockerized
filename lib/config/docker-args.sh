@@ -143,12 +143,17 @@ build_common_docker_args() {
         --security-opt no-new-privileges:true
         --cap-drop=ALL
         --label "pi-dockerized=1"
+        --label "pi-dockerized.profile=${PI_PROFILE:-default}"
         -e "TERM=${TERM:-xterm-256color}"
     )
 
-    # Optional resource limits (setting.memory / setting.cpus).
+    # Optional resource limits (setting.memory / setting.cpus) and the process
+    # cap (setting.pids_limit): fork bombs are contained by the kernel, since
+    # the balanced policy no longer pattern-matches them.
     [ -n "$MEMORY" ] && DOCKER_COMMON_ARGS+=(--memory "$MEMORY")
     [ -n "$CPUS" ] && DOCKER_COMMON_ARGS+=(--cpus "$CPUS")
+    local pids_limit="${PIDS_LIMIT:-4096}"
+    [ "$pids_limit" != unlimited ] && DOCKER_COMMON_ARGS+=(--pids-limit "$pids_limit")
 
     # Pass terminal identification variables so applications inside the container
     # can detect the host terminal and use its capabilities correctly.

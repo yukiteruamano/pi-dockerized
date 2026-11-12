@@ -151,7 +151,23 @@ project session prints an `Exposure:` line summarizing what it can reach.
 `pi-dockerized --profile work run` (or `PI_DOCKERIZED_PROFILE=work`) uses
 `~/.config/pi-dockerized/profiles/work/` for its own config, secrets file, MCP
 servers, sessions and audit log, so keys and policies never mix between
-contexts. `config profiles` lists them.
+contexts (one profile per provider account). Profiles are created explicitly —
+`config profiles create work` (or `--profile work install`) — and any other
+command naming an unknown profile fails, so a typo can never start a session on
+a fresh empty profile. `config profiles` lists them; `config profiles remove
+work --yes` deletes one, state included. `ps` shows each session's profile.
+
+Two root-config (never per-profile) entries route sessions automatically:
+`setting.default_profile=work` makes `work` the profile when `--profile` is not
+given (`--profile default` escapes back to the root profile), and
+`profile.map.<key>=<path>:<profile>` picks a profile by project directory
+(longest matching path wins; an explicit `--profile` always takes precedence):
+
+```ini
+setting.default_profile=personal
+profile.map.job=~/work:acme
+profile.map.oss=~/src/oss:default
+```
 
 ### Updating and rolling back
 
@@ -274,9 +290,11 @@ setting.allowed_tools=
 setting.verify_updates=false
 setting.memory=4g
 setting.cpus=2
+setting.pids_limit=4096
 setting.env_file=~/.config/pi-dockerized/env
 setting.theme=system
 setting.model=sonnet
+setting.default_profile=
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
 

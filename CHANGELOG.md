@@ -7,6 +7,50 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Security (guard 8)
+
+- **Credential store:** `pi auth login`/`pi auth logout` (new in Pi 1.5.1) are
+  blocked in sessions: `auth.json` is bind-mounted read-write, so a session
+  could log the user out or plant foreign credentials. Reading auth status
+  stays allowed; the user logs in from the host (`pi-dockerized auth`).
+- **Fewer false positives:** common English words ending in "key" (`monkey`,
+  `hockey`, `hotkey`, `turnkey`, …) no longer trip the bare-`*key` secret
+  backstops: `cat monkey.py` and reading `hotkey` pass, while `apikey`,
+  `deploy_key`, `server.key` and `monkey.key` stay blocked. Only the exact
+  word is exempt. Regression tests cover both directions.
+- **Process cap:** containers now run with `--pids-limit` (default 4096,
+  `setting.pids_limit`, `unlimited` to disable). The balanced policy drops the
+  fork-bomb patterns on purpose; the kernel now enforces the bound instead.
+- **Audit:** `audit`/`audit --summary` end with a hint (stderr) saying which
+  rules accept host allow rules (`pi-policy/*`) and which are built-in
+  backstops (`backstop/*`).
+
+### Added (multi-account profiles)
+
+- `config profiles create NAME` / `remove NAME [--yes]`: profiles are created
+  explicitly, and any other command naming an unknown profile fails (exit 3),
+  so a typo in `--profile` can never silently run a session on a fresh empty
+  profile with default settings. `remove` refuses while the profile has
+  running sessions and asks for confirmation.
+  **Migration:** profiles that already exist keep working as-is — the check is
+  on the profile directory, which every earlier flow (`run`, `install`,
+  `config set`) created; one without a `config` file still warns and runs on
+  defaults, as before (a regression test pins this). Only scripts that relied
+  on `--profile NAME run` auto-creating a profile on first use must now call
+  `pi-dockerized config profiles create NAME` (or `--profile NAME install`)
+  first.
+- `setting.default_profile` (root config only): the profile used when
+  `--profile` is not given; `--profile default` names the root profile and
+  escapes it.
+- `profile.map.<key>=<path>:<profile>` (root config only): sessions started in
+  a mapped directory re-exec under that profile (longest path wins, explicit
+  `--profile` always takes precedence, `default` maps back to the root
+  profile). Host-side only by design: a file inside a repository must never
+  choose which account/keys it gets.
+- Sessions carry a `pi-dockerized.profile` label; `ps` (and `ps --json`) show
+  the profile column. Shell/zsh completions cover the new keys and
+  subcommands.
+
 ### Security (guard 7)
 
 Fixes from a full audit; every confirmed bypass has a regression test.

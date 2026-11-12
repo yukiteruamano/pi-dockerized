@@ -35,7 +35,7 @@ _pi_dockerized() {
     settings=(
         ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
         gpg_relay docker_socket network security_policy allowed_tools verify_updates
-        memory cpus env_file theme model
+        memory cpus pids_limit env_file theme model default_profile
     )
 
     _arguments -C \
@@ -100,7 +100,7 @@ _pi_dockerized() {
                                 'sync:Repair host-side Pi state (--check for drift only)'
                                 'pi:Show or edit the Pi agent config (path|edit)'
                                 'allow:Show or edit the host allow rules for the guard'
-                                'profiles:List the named profiles'
+                                'profiles:List, create or remove named profiles'
                             )
                             _describe -t config_cmds 'config subcommand' config_cmds
                             ;;

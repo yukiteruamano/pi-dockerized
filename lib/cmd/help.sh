@@ -32,7 +32,8 @@ Commands:
     pull [TAG] [--no-verify|--allow-downgrade]  Fetch the prebuilt, signed image instead of building
     rollback            Go back to the image the last build/pull replaced
     version             Show wrapper, image, guard, policy-set and Pi versions
-    config [show|edit|get|set|path|sync|profiles]  Wrapper config (INI)
+    config [show|edit|get|set|path|sync]           Wrapper config (INI)
+    config profiles [list|create NAME|remove NAME] Named profiles (own config, keys, state)
     config pi [path|edit]             Pi agent config (mcp.json)
     config allow [path|edit]          Host allow rules for the guard (allow.json)
     clean               Remove the Docker image (all tags)

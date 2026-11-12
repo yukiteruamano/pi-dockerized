@@ -82,7 +82,8 @@ pi-dockerized ps | stop NAME|--all            # Running sessions
 pi-dockerized pull [TAG] [--no-verify|--allow-downgrade]  # Prebuilt signed image
 pi-dockerized rollback                        # Previous image back to latest
 pi-dockerized version                         # Wrapper, image, guard, policies, Pi
-pi-dockerized config show|edit|get|set|path|sync|profiles   # Wrapper INI config
+pi-dockerized config show|edit|get|set|path|sync            # Wrapper INI config
+pi-dockerized config profiles [list|create NAME|remove NAME [--yes]]  # Named profiles
 pi-dockerized config pi|allow [path|edit]     # mcp.json / guard allow.json
 pi-dockerized uninstall [--image] [--purge-config [--all-profiles]]
 pi-dockerized clean                           # Remove Docker image (all tags)
@@ -239,11 +240,22 @@ setting.allowed_tools=
 setting.verify_updates=false
 setting.memory=4g
 setting.cpus=2
+setting.pids_limit=4096
 setting.env_file=~/.config/pi-dockerized/env
 setting.theme=system
 setting.model=sonnet
+setting.default_profile=
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
+profile.map.work=~/work:acme
 ```
+
+Profiles are created explicitly (`config profiles create NAME` or
+`--profile NAME install`); any other command naming an unknown profile exits 3.
+`setting.default_profile` and `profile.map.*` are read from the ROOT config
+only (bin/pi-dockerized resolves them before the library loads; `profile_for_dir`
+in `core.sh` does the longest-prefix mapping, `maybe_switch_mapped_profile` in
+`lib/cmd/session.sh` re-execs with `--profile`). `--profile default` names the
+root profile. Sessions carry a `pi-dockerized.profile` label.
 
 Secrets only travel via `setting.env_file` (dotenv under the config dir,
 `docker --env-file`, never mounted). The loader reads the file in one pass and

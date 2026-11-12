@@ -20,10 +20,18 @@ with `pi-dockerized config set <key> <value>`, inspect with
 | `verify_updates` | bool | `false` | `update`/`upgrade` require a signed upstream head |
 | `memory` | size | empty | Container memory limit, e.g. `4g` |
 | `cpus` | number | empty | Container CPU limit, e.g. `2` |
+| `pids_limit` | number\|`unlimited` | `4096` | Container process cap (`docker --pids-limit`); contains fork bombs at the kernel |
 | `env_file` | path | empty | Secrets file (dotenv, `0600`) passed as `docker --env-file`, never mounted |
 | `theme` | name | empty | Pi theme passed as `--use-theme` |
 | `model` | name | empty | Startup model passed as `--model` |
+| `default_profile` | name | empty | Profile used when `--profile` is not given. Root config only; `--profile default` escapes back to the root profile |
 
 Custom mounts (`mount.<name>=<host>:<container>`) and profiles (`--profile NAME`,
 own config/keys/sessions under `~/.config/pi-dockerized/profiles/`) live in the
-same INI file; see `examples/config.example` for an annotated file.
+same INI file; see `examples/config.example` for an annotated file. Profiles are
+created explicitly (`config profiles create NAME` or `--profile NAME install`):
+any other command with an unknown profile is an error, so a typo cannot run a
+session on a fresh empty profile. `profile.map.<key>=<path>:<profile>` lines in
+the ROOT config map project directories to profiles (longest path wins; an
+explicit `--profile` always takes precedence; `default` maps back to the root
+profile).

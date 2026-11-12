@@ -17,6 +17,39 @@ SESSION_CONTAINER=""
 # 128 KiB; leave headroom).
 EXEC_PROMPT_MAX_BYTES=120000
 
+# Re-exec under the profile that profile.map (root config) assigns to the
+# session's project directory. Explicit --profile/PI_DOCKERIZED_PROFILE always
+# wins (PI_PROFILE_SOURCE=explicit, also set by the re-exec itself, so this
+# runs at most once); the mapping outranks setting.default_profile.
+# Usage: maybe_switch_mapped_profile <command> [args...]
+maybe_switch_mapped_profile() {
+    local command="$1"
+    shift
+    [ "${PI_PROFILE_SOURCE:-none}" = explicit ] && return 0
+    grep -q '^[[:space:]]*profile\.map\.' "$PI_CONFIG_ROOT/config" 2>/dev/null || return 0
+    parse_session_flags "$@" || return 0
+    # The directory the session will use: --dir, the positional directory
+    # (run/shell; exec's positional is the prompt), or the working directory.
+    local dir="$SESSION_DIR"
+    if [ -z "$dir" ] && [ "$command" != exec ] &&
+        [ ${#SESSION_REST[@]} -gt 0 ] && [ -d "$(expand_tilde "${SESSION_REST[0]}")" ]; then
+        dir="${SESSION_REST[0]}"
+    fi
+    [ -z "$dir" ] && dir="$PWD"
+    local mapped
+    mapped=$(profile_for_dir "$(canonical_path "$(expand_tilde "$dir")")")
+    [ -z "$mapped" ] && return 0
+    [ "$mapped" = "${PI_PROFILE:-default}" ] && return 0
+    if [ "$mapped" != default ] && [ ! -d "$PI_CONFIG_ROOT/profiles/$mapped" ]; then
+        print_error "profile.map points '$dir' at profile '$mapped', which does not exist."
+        print_info "Create it with '$0 config profiles create $mapped' or fix the mapping in $PI_CONFIG_ROOT/config."
+        exit "$E_CONFIG"
+    fi
+    # To stderr: exec's stdout is pipeable command output.
+    print_info "Using profile '$mapped' (profile.map for $dir)" >&2
+    PI_PROFILE_SOURCE=explicit exec "$0" --profile "$mapped" "$command" "$@"
+}
+
 # Resolve a project directory to an absolute, symlink-free path and refuse the
 # ones that would expose the home directory (or a parent of it).
 # Usage: dir=$(resolve_project_dir <dir>)
@@ -419,15 +452,16 @@ running_sessions() {
 list_sessions() {
     if [ "${1:-}" = "--json" ]; then
         docker ps --filter "label=pi-dockerized=1" \
-            --format '{{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.project"}}' |
-            while IFS="$(printf '\t')" read -r name status project; do
+            --format '{{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.profile"}}\t{{.Label "pi-dockerized.project"}}' |
+            while IFS="$(printf '\t')" read -r name status profile project; do
                 [ -n "$name" ] || continue
-                printf '{"name":"%s","status":"%s","project":"%s"}\n' \
-                    "$(json_escape "$name")" "$(json_escape "$status")" "$(json_escape "$project")"
+                printf '{"name":"%s","status":"%s","profile":"%s","project":"%s"}\n' \
+                    "$(json_escape "$name")" "$(json_escape "$status")" \
+                    "$(json_escape "$profile")" "$(json_escape "$project")"
             done
     else
         docker ps --filter "label=pi-dockerized=1" \
-            --format 'table {{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.project"}}'
+            --format 'table {{.Names}}\t{{.Status}}\t{{.Label "pi-dockerized.profile"}}\t{{.Label "pi-dockerized.project"}}'
     fi
 }
 
