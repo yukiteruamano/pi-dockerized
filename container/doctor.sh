@@ -33,7 +33,12 @@ else
     note "MISSING security-guard extension"
     status=1
 fi
-if [ -f "$agent/allow.json" ]; then note "host allow rules: mounted (read-only)"; else note "host allow rules: none"; fi
+# The guard reads an allow file only when the wrapper names the mounted host one.
+if [ -n "${PI_DOCKERIZED_ALLOW_FILE:-}" ] && [ -f "$PI_DOCKERIZED_ALLOW_FILE" ]; then
+    note "host allow rules: mounted (read-only)"
+else
+    note "host allow rules: none"
+fi
 if [ -w "$agent/audit.log" ]; then note "audit log: writable"; else note "audit log: not mounted (blocked calls are not recorded)"; fi
 
 echo "== agent config =="

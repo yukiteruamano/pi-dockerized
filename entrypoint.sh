@@ -31,6 +31,10 @@ export NVM_DIR="/home/coder/.nvm"
 # the default so one-off commands still resolve it).
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-/home/coder/.pi/agent}"
 
+# No on-disk transpile cache for extensions (see the Dockerfile): re-assert it
+# for one-off commands too.
+export JITI_FS_CACHE=false
+
 # With GnuPG agent forwarding, start the local keyboxd so gpg can read the
 # mirrored public keyring (public-keys.d/). The mirrored gpg.conf sets
 # no-autostart, which only blocks on-demand autostart, not this explicit launch;
@@ -44,8 +48,16 @@ fi
 # empty pattern files, a canary call judged wrongly). The baked diagnostics
 # skip it so `pi-dockerized doctor` can still run and report what is wrong.
 GUARD_DIR="${PI_CODING_AGENT_DIR}/extensions/pi-security-guard"
-case "${1:-}" in
-/usr/local/lib/pi-dockerized/*) ;;
+DIAG_DIR=/usr/local/lib/pi-dockerized
+# Only an existing script directly in the baked diagnostics dir skips the
+# checks: the path is resolved first, so `$DIAG_DIR/../../../bin/bash` does not.
+skip_checks=false
+if [[ "${1:-}" == "$DIAG_DIR"/* ]]; then
+    diag=$(realpath -e -- "$1" 2>/dev/null || true)
+    [ -n "$diag" ] && [ "$(dirname -- "$diag")" = "$DIAG_DIR" ] && skip_checks=true
+fi
+case "$skip_checks" in
+true) ;;
 *)
     # The settings in effect are the host's settings.json (preferences only) or,
     # with Pi Packages, the ext-agent file. Either way the security keys must be

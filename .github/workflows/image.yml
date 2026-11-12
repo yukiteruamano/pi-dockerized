@@ -50,14 +50,17 @@ jobs:
               exit 1
             fi
             tags="${IMAGE}:v${version} ${IMAGE}:latest"
+            release=true
           else
             # Not a release: never move vX.Y.Z or latest.
             version="$wrapper"
             tags="${IMAGE}:dev-${SHA:0:12}"
+            release=false
           fi
           {
             echo "version=$version"
             echo "tags=$tags"
+            echo "release=$release"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >>"$GITHUB_OUTPUT"
 
@@ -87,6 +90,9 @@ jobs:
             WRAPPER_VERSION=${{ steps.meta.outputs.version }}
             VCS_REF=${{ github.sha }}
             INSTALL_DOCKER_CLI=false
+          # Release images are built from scratch: cached layers would keep the
+          # floating Node major and apt packages at whatever a dev build saw.
+          no-cache: ${{ steps.meta.outputs.release == 'true' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
