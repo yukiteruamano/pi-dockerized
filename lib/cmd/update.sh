@@ -7,11 +7,11 @@
 # Both perform the full upgrade (git pull from GitHub + host-state sync + image
 # rebuild). They differ only in prompting: `upgrade` asks before pulling when
 # interactive, `update` pulls without asking. Both accept
-# [--check] [--yes] [--no-build] [--verify] [--pi-version X].
+# [--check] [--yes] [--no-build] [--verify|--no-verify] [--pi-version X].
 #
 # Pulling runs new code on the host, so the commits are listed before anything
-# changes, and with --verify (or setting.verify_updates=true) the upstream head
-# must carry a valid signature.
+# changes, and (setting.verify_updates, default on; --verify/--no-verify per
+# run) the upstream head must carry a valid signature from a release signer.
 
 # Fingerprints allowed to sign upstream heads, one per line (`#` comments). The
 # list is read from the checkout as it is BEFORE the update, so an update cannot
@@ -26,7 +26,8 @@ verify_upstream_signature() {
     local repo="$1" rev="$2" signers="$1/$RELEASE_SIGNERS_FILE" fpr primary allowed
     if ! git -C "$repo" verify-commit "$rev" >/dev/null 2>&1; then
         print_error "The upstream head ${rev:0:12} has no valid signature; refusing to pull."
-        print_info "Import the maintainer's key, or turn off setting.verify_updates / --verify."
+        print_info "Import the maintainer's key (see $RELEASE_SIGNERS_FILE; e.g. 'gpg --recv-keys <fingerprint>'),"
+        print_info "or skip the check once with --no-verify (setting.verify_updates=false turns it off)."
         return 1
     fi
     if [ ! -f "$signers" ]; then
@@ -86,7 +87,7 @@ _git_pull_wrapper() {
     local n
     n=$(git -C "$REPO_ROOT" rev-list --count HEAD..'@{u}')
     print_info "Update available: $n commit(s) behind upstream:"
-    git -C "$REPO_ROOT" log --oneline --no-decorate -n 20 HEAD..'@{u}' | sed 's/^/    /'
+    git -C "$REPO_ROOT" log --oneline --no-decorate -n 20 HEAD..'@{u}' | strip_control_chars | sed 's/^/    /'
     [ "$n" -gt 20 ] && echo "    ... and $((n - 20)) more"
     git -C "$REPO_ROOT" diff --stat HEAD..'@{u}' | tail -n 1 | sed 's/^/  /'
     if [ "$check_only" = true ]; then
@@ -127,7 +128,7 @@ _parse_self_update_flags() {
     _UP_CHECK=false
     _UP_YES=false
     _UP_NO_BUILD=false
-    _UP_VERIFY=false
+    _UP_VERIFY=""
     _UP_PI_VERSION=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -135,6 +136,7 @@ _parse_self_update_flags() {
         --yes) _UP_YES=true ;;
         --no-build) _UP_NO_BUILD=true ;;
         --verify) _UP_VERIFY=true ;;
+        --no-verify) _UP_VERIFY=false ;;
         --pi-version)
             if [ -z "${2:-}" ]; then
                 print_error "--pi-version needs a value (latest or x.y.z)"
@@ -148,16 +150,17 @@ _parse_self_update_flags() {
             shift
             ;;
         --help | -h)
-            echo "Usage: $0 $cmd [--check] [--yes] [--no-build] [--verify] [--pi-version X]"
+            echo "Usage: $0 $cmd [--check] [--yes] [--no-build] [--verify|--no-verify] [--pi-version X]"
             echo "  --check            only report whether an update is available"
             echo "  --yes              pull and rebuild without asking"
             echo "  --no-build         pull + sync only, skip the image rebuild"
-            echo "  --verify           require a valid signature on the upstream head"
+            echo "  --verify           require a valid signature on the upstream head (default: setting.verify_updates)"
+            echo "  --no-verify        skip the signature check for this run"
             echo "  --pi-version X     Pi release to install: x.y.z or latest (default: the pinned one)"
             return 0
             ;;
         *)
-            print_error "Unknown $cmd option: $1 (use --check|--yes|--no-build|--verify|--pi-version)"
+            print_error "Unknown $cmd option: $1 (use --check|--yes|--no-build|--verify|--no-verify|--pi-version)"
             return 1
             ;;
         esac
@@ -204,7 +207,7 @@ rollback_code_after_failed_build() {
 }
 
 # Full upgrade: git pull + host-state sync + image rebuild.
-# Usage: full_upgrade <command-name> [--check] [--yes] [--no-build] [--verify] [--pi-version X]
+# Usage: full_upgrade <command-name> [--check] [--yes] [--no-build] [--verify|--no-verify] [--pi-version X]
 full_upgrade() {
     local cmd="$1"
     shift
@@ -213,9 +216,9 @@ full_upgrade() {
     *" --help "* | *" -h "*) return 0 ;;
     esac
     parse_config || true
-    local verify=false
-    if [ "$_UP_VERIFY" = true ] || [ "$VERIFY_UPDATES" = true ]; then
-        verify=true
+    local verify="${_UP_VERIFY:-$VERIFY_UPDATES}"
+    if [ "$verify" != true ]; then
+        print_warning "Signature check off: the incoming code is not verified."
     fi
 
     if [ "$_UP_CHECK" = true ]; then
@@ -247,7 +250,7 @@ full_upgrade() {
     check_docker || return 1
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         print_info "Current Pi version:"
-        docker run --rm --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
+        docker run "${AUX_RUN_ARGS[@]}" --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
     else
         print_info "Image not found, building fresh..."
     fi
@@ -262,18 +265,18 @@ full_upgrade() {
         return 1
     fi
     print_info "Updated Pi version:"
-    docker run --rm --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
+    docker run "${AUX_RUN_ARGS[@]}" --entrypoint bash "$IMAGE_NAME" -c "pi --version" 2>/dev/null || true
     print_success "Upgrade complete (code + config + image)."
 }
 
 # Self-update the wrapper checkout from GitHub (Doom-style `doom upgrade`).
-# Usage: upgrade_wrapper [--check] [--yes] [--no-build] [--verify] [--pi-version X]
+# Usage: upgrade_wrapper [--check] [--yes] [--no-build] [--verify|--no-verify] [--pi-version X]
 upgrade_wrapper() {
     full_upgrade upgrade "$@"
 }
 
 # Update Pi (full upgrade: git pull + sync + rebuild).
-# Usage: update_pi [--check] [--yes] [--no-build] [--verify] [--pi-version X]
+# Usage: update_pi [--check] [--yes] [--no-build] [--verify|--no-verify] [--pi-version X]
 update_pi() {
     full_upgrade update "$@"
 }

@@ -31,6 +31,19 @@ CONTAINER_MOUNT_EXCEPTIONS=(/etc/ssl/certs /usr/local/share/ca-certificates)
 # bind does not stop connect(). Removable media under /run/media stay allowed.
 HOST_SOCKET_DIRS=(/run /var/run)
 
+# Shared temp dirs: they hold per-user sockets (tmux, ssh-agent, X11, IDE
+# IPC), so neither they nor an ancestor may be mounted; a project below them
+# is fine unless it is one of those socket directories.
+HOST_TMP_DIRS=(/tmp /var/tmp)
+HOST_TMP_SOCKET_GLOBS=(.X11-unix .ICE-unix .font-unix .XIM-unix 'tmux-*' 'ssh-*' 'vscode-*')
+
+# Container VM homes under $HOME whose directories hold engine sockets.
+HOME_SOCKET_PATHS=(.colima .rd .lima .orbstack .local/share/containers)
+
+# How deep to look for socket files in a mount source: a socket in a mounted
+# tree is reachable by connect() even through a read-only bind.
+SOCKET_SCAN_DEPTH=3
+
 # Pseudo filesystems: /proc/<pid>/root and friends reach the host's root.
 HOST_PSEUDO_FS=(/proc /sys /dev)
 
@@ -116,6 +129,26 @@ forbidden_mount_reason() {
             return 0
         fi
     done
+    for rel in "${HOME_SOCKET_PATHS[@]}"; do
+        if paths_overlap "$path" "$home/$rel"; then
+            echo "it holds a container engine VM and its sockets (~/$rel)"
+            return 0
+        fi
+    done
+    local glob
+    for root in "${HOST_TMP_DIRS[@]}"; do
+        if path_within "$root" "$path"; then
+            echo "it is or contains a shared temp directory ($root: tmux, ssh-agent and X11 sockets)"
+            return 0
+        fi
+        for glob in "${HOST_TMP_SOCKET_GLOBS[@]}"; do
+            # shellcheck disable=SC2053 # $glob is a pattern on purpose
+            if [[ "$path" == "$root"/$glob || "$path" == "$root"/$glob/* ]]; then
+                echo "it is a socket directory under $root"
+                return 0
+            fi
+        done
+    done
     for root in "${HOST_PSEUDO_FS[@]}"; do
         if path_within "$path" "$root"; then
             echo "it is a pseudo filesystem ($root) that reaches the host"
@@ -142,11 +175,23 @@ forbidden_mount_reason() {
     return 0
 }
 
+# Print the first socket found in a directory tree (bounded depth, symlinks not
+# followed), or nothing. Unreadable entries are skipped.
+# Usage: sock=$(find_socket <dir>)
+find_socket() {
+    if [ -S "$1" ]; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [ -d "$1" ] || return 0
+    find "$1" -maxdepth "$SOCKET_SCAN_DEPTH" -type s -print -quit 2>/dev/null || true
+}
+
 # Validate the host side of a custom mount. Prints the reason and returns 1 when
 # refused; warns (and succeeds) for sources that merely deserve attention.
 # Usage: validate_mount_source <host_path> <name>
 validate_mount_source() {
-    local host_path="$1" name="$2" real home_real form home why
+    local host_path="$1" name="$2" real home_real form home why sock
     if [[ "$host_path" != /* ]]; then
         config_error "Invalid mount '$name': host path must be absolute (got '$host_path')."
         return 1
@@ -163,6 +208,11 @@ validate_mount_source() {
             fi
         done
     done
+    if sock=$(find_socket "$real") && [ -n "$sock" ]; then
+        config_error "Refusing to mount $host_path ($name): it contains a socket ($sock) the agent could connect to."
+        config_info "Move the socket out of the tree, or mount a narrower directory."
+        return 1
+    fi
     case "$real" in
     "$home_real"/.npmrc | "$HOME"/.npmrc)
         config_warning "Mounting ~/.npmrc hands its registry tokens to the agent."

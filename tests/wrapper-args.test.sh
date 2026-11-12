@@ -18,6 +18,8 @@ trap 'rm -r "$TMP" 2>/dev/null || true' EXIT
 # (host-only); allow it here. A dedicated assertion below verifies the refusal
 # without this override.
 export PI_DOCKERIZED_ALLOW_CONTAINER_SYNC=1
+# The isolated CONFIG_DIR/PI_HOME below are honored only in test mode.
+export PI_DOCKERIZED_TEST=1
 
 fail() {
     echo "FAIL: $1"
@@ -49,7 +51,8 @@ export PATH="$REPO_DIR/bin:$PATH"
 PROJECT="$TMP/proj"
 AGENT="$PI_HOME/.pi/agent"
 
-mkdir -p "$HOME/.claude" "$HOME/.agents" "$PROJECT"
+mkdir -p "$HOME/.claude/skills" "$HOME/.agents/skills" "$PROJECT/.git/hooks"
+touch "$PROJECT/.gitmodules"
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/config-lib.sh"
@@ -84,8 +87,34 @@ assert_contains "$vols" "$AGENT/skills:/home/coder/.pi/agent/skills:ro" "skills 
 assert_contains "$vols" "$AGENT/sessions:/home/coder/.pi/agent/sessions:rw" "sessions must be mounted read-write"
 assert_contains "$vols" "$AGENT/auth.json:/home/coder/.pi/agent/auth.json:rw" "auth.json must be mounted read-write"
 assert_contains "$vols" "$AGENT/mcp-auth.json:/home/coder/.pi/agent/mcp-auth.json:rw" "mcp-auth.json must be mounted read-write"
-assert_contains "$vols" "$HOME/.claude:/home/coder/.claude:ro" "the .claude directory must be mounted read-only"
-assert_contains "$vols" "$HOME/.agents:/home/coder/.agents:ro" "the .agents directory must be mounted read-only"
+assert_contains "$vols" "$HOME/.claude/skills:/home/coder/.claude/skills:ro" "the .claude skills must be mounted read-only"
+assert_contains "$vols" "$HOME/.agents/skills:/home/coder/.agents/skills:ro" "the .agents skills must be mounted read-only"
+assert_not_contains "$vols" "$HOME/.claude:" "the whole .claude directory (Claude Code login) must never be mounted"
+assert_not_contains "$vols" "$HOME/.agents:" "the whole .agents directory must never be mounted"
+assert_contains "$vols" "$AGENT/trust.json:/home/coder/.pi/agent/trust.json:ro" "trust.json must be mounted read-only"
+assert_not_contains "$vols" "trust.json:rw" "a session must never write saved trust decisions"
+assert_contains "$vols" "type=bind,source=$PROJECT/.git,target=$PROJECT/.git,readonly" "the project .git must be mounted read-only"
+assert_contains "$vols" "type=bind,source=$PROJECT/.gitmodules,target=$PROJECT/.gitmodules,readonly" "the project .gitmodules must be mounted read-only"
+assert_not_contains "$vols" "PI_DOCKERIZED_ALLOW_FILE" "no allow file is named when the host has none"
+GIT_READONLY=false
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "source=$PROJECT/.git," "git_readonly=false must leave .git writable"
+GIT_READONLY=true
+mv "$PROJECT/.gitmodules" "$PROJECT/.gm" && ln -s "$HOME" "$PROJECT/.gitmodules"
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "source=$PROJECT/.gitmodules" "a symlinked .gitmodules must not be bind-mounted (Docker would follow it)"
+rm -f "$PROJECT/.gitmodules" && mv "$PROJECT/.gm" "$PROJECT/.gitmodules"
+rmdir "$HOME/.agents/skills" && mkdir -p "$HOME/.ssh" && ln -s "$HOME/.ssh" "$HOME/.agents/skills"
+build_standard_volume_args "$PROJECT" false
+assert_not_contains " ${VOLUME_ARGS[*]} " "/home/coder/.agents/skills" "a compat skills link into a credential store must be refused"
+rm -f "$HOME/.agents/skills" && mkdir -p "$HOME/.agents/skills"
+if [ "$have_node" = true ]; then
+    printf '[]\n' >"$AGENT/allow.json"
+    build_standard_volume_args "$PROJECT" false
+    assert_contains " ${VOLUME_ARGS[*]} " "PI_DOCKERIZED_ALLOW_FILE=/home/coder/.pi/agent/allow.json" "the allow file is named only when mounted"
+    rm -f "$AGENT/allow.json"
+fi
+build_standard_volume_args "$PROJECT" false
 assert_not_contains "$vols" "/var/run/docker.sock" "docker socket must not be mounted by default"
 assert_contains "$vols" "$AGENT/prompts:/home/coder/.pi/agent/prompts:rw" "prompts must be mounted read-write"
 assert_contains "$vols" "$AGENT/themes:/home/coder/.pi/agent/themes:rw" "themes must be mounted read-write"
@@ -139,6 +168,9 @@ assert_contains "$common" "--group-add coder" "coder group must be added"
 assert_contains "$common" "PI_CODING_AGENT_DIR=/home/coder/.pi/agent" "agent dir env must be set"
 assert_contains "$common" "PI_SKIP_VERSION_CHECK=1" "self-update check must be disabled"
 assert_contains "$common" "PI_DOCKERIZED_POLICY=balanced" "policy mode must be forwarded"
+assert_contains "$common" "PI_CODING_AGENT_SESSION_DIR=/home/coder/.pi/agent/sessions" "the session store must be pinned (project sessionDir)"
+assert_contains "$common" "JITI_FS_CACHE=false" "the extension transpile cache must be off"
+assert_not_contains "$common" "PI_DOCKERIZED_ALLOW_FILE" "the allow file is named by the volume args, only when mounted"
 assert_not_contains "$common" "OPENCODE_CONFIG_CONTENT" "legacy OpenCode config must not be used"
 
 # Process cap: on by default (fork bombs are contained by the kernel), tunable,
@@ -412,6 +444,18 @@ if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     validate_mount_source "$XDG_RUNTIME_DIR" "t" >/dev/null 2>&1 && fail "XDG_RUNTIME_DIR must be refused"
 fi
 validate_mount_source /run/media/user/usb/proj "t" >/dev/null 2>&1 || fail "removable media under /run/media must stay allowed"
+for bad_src in /tmp /var/tmp /tmp/ /tmp/.X11-unix "/tmp/tmux-$(id -u)" /tmp/ssh-abc123 /var/tmp/vscode-ipc \
+    "$HOME/.colima" "$HOME/.colima/default" "$HOME/.rd" "$HOME/.lima"; do
+    validate_mount_source "$bad_src" "t" >/dev/null 2>&1 && fail "socket-holding source $bad_src must be refused"
+done
+validate_mount_source "$PROJECT" "t" >/dev/null 2>&1 || fail "a project below /tmp must stay allowed"
+if command -v python3 >/dev/null 2>&1; then
+    mkdir -p "$TMP/sockproj/a/b"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMP/sockproj/a/b/agent.sock"
+    validate_mount_source "$TMP/sockproj" "t" >/dev/null 2>&1 && fail "a tree holding a socket must be refused"
+    validate_mount_source "$TMP/sockproj/a/b/agent.sock" "t" >/dev/null 2>&1 && fail "a socket itself must be refused"
+    rm -rf "$TMP/sockproj"
+fi
 for bad_dst in /etc/ld.so.preload /bin/sh /usr/lib /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/local/bin/pi; do
     validate_container_path "$bad_dst" "t" >/dev/null 2>&1 && fail "mount target $bad_dst must be refused"
 done
@@ -461,11 +505,26 @@ if command -v git >/dev/null 2>&1; then
     mkdir -p "$VICTIM/.git/worktrees/x"
     printf 'gitdir: %s\n' "$VICTIM/.git/worktrees/x" >"$TMP/evil/.git"
     [ -z "$(detect_git_worktree "$TMP/evil")" ] || fail "a worktree entry that does not point back must not be mounted"
+
+    # A common dir planted inside the project itself (swappable for a symlink
+    # before docker run) is never mounted, even when it points back.
+    mkdir -p "$TMP/evil/fake/objects" "$TMP/evil/fake/refs" "$TMP/evil/fake/worktrees/x"
+    printf 'gitdir: %s\n' "$TMP/evil/fake/worktrees/x" >"$TMP/evil/.git"
+    printf '%s\n' "$TMP/evil/.git" >"$TMP/evil/fake/worktrees/x/gitdir"
+    [ -z "$(detect_git_worktree "$TMP/evil")" ] || fail "a common dir inside the project must not be mounted"
+
+    # A FIFO as the back-pointer must not hang the wrapper.
+    mkdir -p "$TMP/fifo-main/objects" "$TMP/fifo-main/refs" "$TMP/fifo-main/worktrees/y" "$TMP/fifo-wt"
+    printf 'gitdir: %s\n' "$TMP/fifo-main/worktrees/y" >"$TMP/fifo-wt/.git"
+    mkfifo "$TMP/fifo-main/worktrees/y/gitdir"
+    out="$(timeout 5 bash -c 'source "$1/lib/config-lib.sh"; detect_git_worktree "$2"' _ "$REPO_DIR" "$TMP/fifo-wt")" ||
+        fail "a FIFO back-pointer must not hang detect_git_worktree"
+    [ -z "$out" ] || fail "a FIFO back-pointer must be ignored"
 fi
 
 # --- GnuPG relay dir and socket overrides ------------------------------------------------
 out="$(env -u PI_DOCKERIZED_TEST GPG_RELAY_DIR="$HOME/work" bash -c 'source "$1/lib/config-lib.sh"; printf %s "$GPG_RELAY_DIR"' _ "$REPO_DIR")"
-assert_eq "$out" "$CONFIG_DIR/gnupg-relay" "GPG_RELAY_DIR from the environment must be ignored outside test mode"
+assert_eq "$out" "$HOME/.config/pi-dockerized/profiles/default/gnupg-relay" "GPG_RELAY_DIR from the environment must be ignored outside test mode"
 out="$(env -u PI_DOCKERIZED_TEST GPG_AGENT_SOCKET="$TMP/owned.sock" bash -c 'source "$1/lib/config-lib.sh"; resolve_gpg_agent_socket' _ "$REPO_DIR" 2>/dev/null)"
 assert_not_contains "$out" "$TMP/owned.sock" "GPG_AGENT_SOCKET must be ignored outside test mode"
 # Even in test mode, cleanup only removes the relay entries it created.
@@ -518,7 +577,9 @@ cleanup_stale_gpg_mirrors
 [ ! -e "$MIRRORS/$OTHER_WRAPPER" ] || fail "the mirror is cleaned once its wrapper is gone"
 
 # --- Env file: dangerous keys and a symlinked config dir --------------------------------------
-for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH PI_SELF_UPDATE_COMMAND; do
+for bad_key in LD_PRELOAD LD_BIND_NOW NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR BASH_ENV PATH \
+    PI_SELF_UPDATE_COMMAND PI_CODING_AGENT_SESSION_DIR JITI_FS_CACHE npm_config_registry GIT_CONFIG_COUNT \
+    GIT_SSH_COMMAND PYTHONPATH PROMPT_COMMAND SSH_AUTH_SOCK; do
     printf 'ANTHROPIC_API_KEY=x\n%s=y\n' "$bad_key" >"$env_ok"
     (
         ENV_FILE="$env_ok"
@@ -527,6 +588,8 @@ for bad_key in LD_PRELOAD NODE_OPTIONS PI_DOCKERIZED_POLICY PI_CODING_AGENT_DIR 
 done
 printf 'export NODE_OPTIONS=--require=/x\n' >"$env_ok"
 (ENV_FILE="$env_ok" build_env_file_args >/dev/null 2>&1) && fail "an 'export' prefix must not hide a forbidden key"
+printf 'ANTHROPIC_API_KEY=x\nGIT_AUTHOR_NAME=me\nNODE_EXTRA_CA_CERTS=/etc/ssl/certs/x.pem\n' >"$env_ok"
+(ENV_FILE="$env_ok" build_env_file_args >/dev/null 2>&1) || fail "harmless keys (GIT_AUTHOR_NAME, NODE_EXTRA_CA_CERTS) must stay allowed"
 printf 'ANTHROPIC_API_KEY=x\n' >"$env_ok"
 ln -s "$CONFIG_DIR" "$TMP/cfglink"
 (CONFIG_DIR="$TMP/cfglink" ENV_FILE="$TMP/cfglink/env" build_env_file_args >/dev/null 2>&1) ||
@@ -616,5 +679,77 @@ for _k in "${SETTING_KEYS[@]}"; do
     grep -qw "$_k" "$REPO_DIR/completions/zsh.sh" || fail "zsh completion misses setting $_k"
 done
 unset _c _k help_cmds
+
+# --- Output hygiene, portable paths and environment roots -------------------------------
+out="$(printf 'a\033]0;x\007b\302\233c\n' | strip_control_chars)"
+assert_eq "$out" "a]0;xbc" "C0 and C1 control characters must be stripped"
+assert_eq "$(json_escape "$(printf 'x\033[2J"\\\ty')")" 'x[2J\"\\y' "json_escape must drop control characters and escape quotes"
+
+SESS="$PI_HOME/.pi/agent/sessions"
+printf '{"cwd":"/p\033]0;PWNED\007"}\n' >"$SESS/20260101T000000_abcdef12.jsonl"
+mkfifo "$SESS/20260101T000001_fifo0000.jsonl"
+ln -s /etc/passwd "$SESS/20260101T000002_link0000.jsonl"
+out="$(NO_COLOR=1 timeout 5 bash -c 'source "$1/lib/config-lib.sh"; source "$1/lib/cmd/sessions.sh"; list_pi_sessions' _ "$REPO_DIR" 2>&1)" ||
+    fail "run --list must not hang on a FIFO in sessions/"
+[[ "$out" != *$'\033'* && "$out" != *$'\007'* ]] || fail "run --list must strip terminal escapes from session data"
+assert_contains "$out" "abcdef12" "run --list must list regular session files"
+assert_not_contains "$out" "link0000" "run --list must skip symlinks in sessions/"
+rm -f "$SESS"/2026010*
+
+mkdir -p "$TMP/cp/real/sub" && ln -s "$TMP/cp/real" "$TMP/cp/link" && ln -s ../real/sub "$TMP/cp/rel"
+for p in "$TMP/cp/link/sub" "$TMP/cp/link/../x" "$TMP/cp/rel/missing/y" "$TMP/cp//real/./sub/" "/"; do
+    assert_eq "$(_canonical_path_portable "$p")" "$(readlink -m -- "$p")" "the portable canonical_path must match readlink -m for $p"
+done
+ln -s loop1 "$TMP/cp/loop2" && ln -s loop2 "$TMP/cp/loop1"
+timeout 5 bash -c 'source "$1/lib/config-lib.sh"; _canonical_path_portable "$2/cp/loop1/x" >/dev/null' _ "$REPO_DIR" "$TMP" ||
+    fail "the portable canonical_path must stop on symlink loops"
+(
+    HOST_CASE_INSENSITIVE=true
+    validate_mount_source "$HOME/.SSH" "t" >/dev/null 2>&1 && fail "\$HOME/.SSH must be refused on a case-insensitive host"
+    path_within "/A/B/c" "/a/b" || fail "case-insensitive hosts must fold case in path_within"
+)
+
+out="$(env -u PI_DOCKERIZED_TEST CONFIG_DIR="$TMP/evil-cfg" PI_HOME="$TMP/evil-home" PI_CONFIG_ROOT="$TMP/evil-root" \
+    bash -c 'source "$1/lib/config-lib.sh"; printf "%s|%s|%s" "$CONFIG_DIR" "$PI_HOME" "$PI_CONFIG_ROOT"' _ "$REPO_DIR" 2>/dev/null)"
+assert_not_contains "$out" "evil" "config roots from the environment must be ignored outside test mode"
+
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/install/sections.sh"
+rc_path_safe "/home/u/.local/share/pi-dockerized" || fail "a plain install path is rc-safe"
+for bad in '/x/$(touch y)' '/x/a"b' '/x/`id`' '/x/a\b'; do
+    rc_path_safe "$bad" && fail "install path $bad must not be embedded in an rc file"
+done
+
+(
+    CONFIG_FILE="$TMP/sp ace/config"
+    mkdir -p "$TMP/sp ace"
+    printf 'x\n' >"$CONFIG_FILE"
+    for i in 1 2 3 4 5 6 7; do : >"$CONFIG_FILE.bak.2026010${i}000000"; done
+    CONFIG_BACKED_UP=false
+    backup_config_file
+    n=$(find "$TMP/sp ace" -name 'config.bak.*' | wc -l)
+    [ "$n" -eq 5 ] || fail "backups must be trimmed to five in a path with spaces (got $n)"
+    [ ! -e "$CONFIG_FILE.bak.20260101000000" ] || fail "the oldest backups must go first"
+)
+
+# install.sh with PI_DOCKERIZED_VERIFY=1: an unsigned clone is removed (never
+# reused by the next run), and a reused unsigned checkout is never executed.
+if command -v git >/dev/null 2>&1; then
+    UPSTREAM="$TMP/upstream"
+    git -c init.defaultBranch=master init -q "$UPSTREAM"
+    mkdir -p "$UPSTREAM/bin" && printf '#!/bin/bash\necho RAN\n' >"$UPSTREAM/bin/pi-dockerized" && chmod +x "$UPSTREAM/bin/pi-dockerized"
+    git -C "$UPSTREAM" add -A && git -C "$UPSTREAM" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm unsigned
+    INST="$TMP/inst"
+    for attempt in 1 2; do
+        out="$(PI_REPO_URL="$UPSTREAM" PI_INSTALL_DIR="$INST" PI_DOCKERIZED_VERIFY=1 GIT_CONFIG_GLOBAL=/dev/null \
+            bash -s <"$REPO_DIR/install.sh" 2>&1)" && fail "an unsigned clone must not install (attempt $attempt)"
+        assert_not_contains "$out" "RAN" "an unverified checkout must never run (attempt $attempt)"
+        [ ! -e "$INST" ] || fail "a clone that failed verification must be removed (attempt $attempt)"
+    done
+    git clone -q "$UPSTREAM" "$INST"
+    out="$(PI_REPO_URL="$UPSTREAM" PI_INSTALL_DIR="$INST" PI_DOCKERIZED_VERIFY=1 GIT_CONFIG_GLOBAL=/dev/null \
+        bash -s <"$REPO_DIR/install.sh" 2>&1)" && fail "a reused unsigned checkout must not run with verification on"
+    assert_not_contains "$out" "RAN" "a reused unsigned checkout must never run"
+fi
 
 echo "All wrapper-args tests passed."

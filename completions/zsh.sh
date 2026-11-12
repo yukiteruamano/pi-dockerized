@@ -68,8 +68,8 @@ _pi_dockerized() {
     )
     settings=(
         ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
-        gpg_relay docker_socket network security_policy allowed_tools verify_updates
-        memory cpus pids_limit env_file theme model default_profile
+        gpg_relay docker_socket git_readonly network security_policy allowed_tools
+        verify_updates memory cpus pids_limit env_file theme model default_profile
     )
 
     _arguments -C \
@@ -128,6 +128,7 @@ _pi_dockerized() {
                             'sync:Repair host-side Pi state (--check for drift only)'
                             'pi:Show or edit the Pi agent config (path|edit)'
                             'allow:Show or edit the host allow rules for the guard'
+                            'trust:Show or edit the saved project-trust decisions'
                         )
                         _describe -t config_cmds 'config subcommand' config_cmds
                         return
@@ -142,7 +143,7 @@ _pi_dockerized() {
                                 compadd $settings
                             elif (( CURRENT == 4 )); then
                                 case $words[3] in
-                                    ssh_agent_support|gpg_agent_support|gpg_allow_main_socket|gpg_autostart_agent|gpg_relay|docker_socket|verify_updates)
+                                    ssh_agent_support|gpg_agent_support|gpg_allow_main_socket|gpg_autostart_agent|gpg_relay|docker_socket|git_readonly|verify_updates)
                                         compadd true false ;;
                                     network) compadd host bridge ;;
                                     security_policy) compadd strict balanced off ;;
@@ -153,7 +154,7 @@ _pi_dockerized() {
                             fi
                             ;;
                         sync) compadd -- --check ;;
-                        pi|allow) (( CURRENT == 3 )) && compadd path edit ;;
+                        pi|allow|trust) (( CURRENT == 3 )) && compadd path edit ;;
                     esac
                     ;;
                 profile)
@@ -201,7 +202,7 @@ _pi_dockerized() {
                 upgrade|update)
                     case $words[CURRENT-1] in
                         --pi-version) compadd latest ;;
-                        *) compadd -- --check --yes --no-build --verify --pi-version ;;
+                        *) compadd -- --check --yes --no-build --verify --no-verify --pi-version ;;
                     esac
                     ;;
                 build)

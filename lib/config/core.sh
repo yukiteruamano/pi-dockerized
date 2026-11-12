@@ -14,6 +14,13 @@
 # state, so keys, policies and sessions never mix between contexts. The root
 # itself only holds the routing config (ROOT_CONFIG_FILE: default_profile and
 # profile.map.*); layouts from older versions are migrated by layout.sh.
+# The roots below pick which config (mounts, docker_socket, allow rules) a
+# session runs with, so the environment may only move them in test mode
+# (PI_DOCKERIZED_TEST=1, like test_seam): a project's .envrc must not be able
+# to point the wrapper at a config it planted.
+if [ "${PI_DOCKERIZED_TEST:-}" != 1 ]; then
+    unset PI_CONFIG_ROOT CONFIG_DIR CONFIG_FILE PI_HOME EXT_AGENT_DIR
+fi
 PI_CONFIG_ROOT="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
 ROOT_CONFIG_FILE="$PI_CONFIG_ROOT/config"
 PI_PROFILE="${PI_DOCKERIZED_PROFILE:-}"
@@ -105,7 +112,8 @@ safe_text() {
 # Filter form of safe_text for text read from files (stdin to stdout).
 # Usage: tail -n 5 file | strip_control_chars
 strip_control_chars() {
-    tr -d '\000-\010\013-\037\177'
+    # C1 controls (U+0080-U+009F, e.g. the 8-bit CSI) are UTF-8 C2 80..C2 9F.
+    tr -d '\000-\010\013-\037\177' | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g'
 }
 
 # Info and success go to stdout; warnings and errors to stderr, so command
@@ -120,11 +128,12 @@ config_success() { print_success "$1"; }
 config_warning() { print_warning "$1"; }
 
 # Escape a string for embedding in JSON double quotes (backslash + quote).
-# Docker names and session basenames cannot contain newlines, so no other
-# control character needs handling here.
+# Control characters are dropped: values come from session files and container
+# labels a session can write, and raw ones would break the JSON (and reach the
+# terminal of whoever prints it).
 # Usage: json_escape <string>
 json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    printf '%s' "$1" | tr -d '\000-\037\177' | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e $'s/\xc2[\x80-\x9f]//g'
 }
 config_error() { print_error "$1"; }
 
@@ -269,21 +278,63 @@ expand_tilde() {
 }
 
 # Resolve a path to its canonical form without requiring it to exist (symlinks
-# followed). Falls back to the literal path where `readlink -m` is unavailable.
+# followed). Uses `readlink -m` where available (GNU) and a component-by-
+# component walk elsewhere (macOS), so the mount checks always see the
+# symlink-resolved path.
 # Usage: real=$(canonical_path "$path")
 canonical_path() {
     local out
     if out=$(readlink -m -- "$1" 2>/dev/null) && [ -n "$out" ]; then
         printf '%s' "$out"
     else
-        printf '%s' "$1"
+        _canonical_path_portable "$1"
     fi
 }
+
+# Portable fallback of canonical_path: resolves each existing component's
+# symlink in turn (like `readlink -m`), then `..` against the resolved parent.
+# Gives up (prints the input) after 40 nested links, as the kernel does.
+# Usage: _canonical_path_portable <path> [depth]
+_canonical_path_portable() {
+    local path="$1" depth="${2:-0}" cur="" part link
+    local -a parts
+    if [ "$depth" -ge 40 ]; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [[ "$path" == /* ]] || path="$PWD/$path"
+    IFS=/ read -ra parts <<<"$path"
+    for part in "${parts[@]}"; do
+        case "$part" in
+        "" | .) continue ;;
+        ..)
+            cur="${cur%/*}"
+            continue
+            ;;
+        esac
+        cur="$cur/$part"
+        if [ -L "$cur" ]; then
+            link=$(readlink -- "$cur")
+            [[ "$link" == /* ]] || link="${cur%/*}/$link"
+            cur=$(_canonical_path_portable "$link" $((depth + 1)))
+            [ "$cur" = / ] && cur=""
+        fi
+    done
+    printf '%s' "${cur:-/}"
+}
+
+# Case-insensitive host filesystems (macOS default APFS): `~/.SSH` is
+# `~/.ssh` there, so path comparisons fold case.
+HOST_CASE_INSENSITIVE=false
+[ "$(uname -s 2>/dev/null)" = Darwin ] && HOST_CASE_INSENSITIVE=true
 
 # True when CHILD equals PARENT or lies inside it (both absolute, no trailing /).
 # Usage: path_within <child> <parent>
 path_within() {
     local child="${1%/}" parent="${2%/}"
+    if [ "$HOST_CASE_INSENSITIVE" = true ]; then
+        child="${child,,}" parent="${parent,,}"
+    fi
     [ "$child" = "$parent" ] || [[ "$child" == "$parent"/* ]]
 }
 

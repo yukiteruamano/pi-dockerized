@@ -59,14 +59,27 @@ if [ ! -d "$INSTALL_DIR" ]; then
         exit 1
     fi
     echo "Cloning pi-dockerized into $INSTALL_DIR ..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    # Clone next to the target and move it into place only once verified: a
+    # checkout left behind by a failed check would be reused (and run) by the
+    # next attempt without any verification.
+    _staging="$INSTALL_DIR.partial.$$"
+    git clone "$REPO_URL" "$_staging"
     # A fresh clone has no earlier signer list to check against: require at
     # least a signature from a key this machine's git already trusts.
-    if [ "$VERIFY" = true ] && ! git -C "$INSTALL_DIR" verify-commit HEAD >/dev/null 2>&1; then
-        echo "error: the cloned head has no valid signature (PI_DOCKERIZED_VERIFY=1); not installing. Inspect $INSTALL_DIR." >&2
+    if [ "$VERIFY" = true ] && ! git -C "$_staging" verify-commit HEAD >/dev/null 2>&1; then
+        echo "error: the cloned head has no valid signature (PI_DOCKERIZED_VERIFY=1); not installing." >&2
+        rm -rf -- "$_staging"
         exit 1
     fi
+    mv -- "$_staging" "$INSTALL_DIR"
+    unset _staging
 elif command -v git >/dev/null 2>&1; then
+    # A reused checkout runs its own scripts below: with verification on, its
+    # current head must carry a valid signature before anything is sourced.
+    if [ "$VERIFY" = true ] && ! git -C "$INSTALL_DIR" verify-commit HEAD >/dev/null 2>&1; then
+        echo "error: the existing checkout's head has no valid signature (PI_DOCKERIZED_VERIFY=1); not running it. Inspect $INSTALL_DIR." >&2
+        exit 1
+    fi
     # Reused checkout. Manual checkouts (init + remote add) lack an upstream
     # branch, which breaks `update`/`upgrade` and the fast-forward below: fix
     # that first with the same helper the wizard uses. Best-effort throughout.

@@ -26,8 +26,8 @@ Commands:
     stop [--yes] NAME|--all  Stop running sessions (--all asks unless --yes)
     install [OPTS]      First-time install / repair PATH, config, completions, aliases
     uninstall [OPTS]    Remove the shell integration (--image, --purge-config, --all-profiles)
-    upgrade [--check|--yes|--no-build|--verify|--pi-version X]  Full upgrade: git pull + sync + image rebuild
-    update  [--check|--yes|--no-build|--verify|--pi-version X]  Same, without the confirmation prompt
+    upgrade [--check|--yes|--no-build|--[no-]verify|--pi-version X]  Full upgrade: git pull + sync + image rebuild
+    update  [--check|--yes|--no-build|--[no-]verify|--pi-version X]  Same, without the confirmation prompt
     build [--pi-version X] [--bust-cache] [--fresh]  Build the image (smoke-tested before it replaces the current one)
     pull [TAG] [--no-verify|--allow-downgrade]  Fetch the prebuilt, signed image instead of building
     rollback            Go back to the image the last build/pull replaced
@@ -35,6 +35,7 @@ Commands:
     config [show|edit|get|set|path|sync]           Wrapper config (INI)
     config pi [path|edit]             Pi agent config (mcp.json)
     config allow [path|edit]          Host allow rules for the guard (allow.json)
+    config trust [path|edit]          Saved project-trust decisions (trust.json, read-only in sessions)
     profile [list]                    Named profiles (own config, secrets, keys, state)
     profile create NAME | remove NAME [--yes]   Add or delete a profile (names are unique)
     profile show|path [NAME]          A profile's settings or directory

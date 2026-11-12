@@ -61,6 +61,8 @@ fi
 # (root config). `--profile default` names the default profile
 # (profiles/default), escaping an inherited default_profile. PI_PROFILE_SOURCE tells the mapping step whether
 # the choice was explicit. Exit code 3 = bad host config (E_CONFIG).
+# The config root comes from the environment only in test mode (see core.sh).
+[ "${PI_DOCKERIZED_TEST:-}" = 1 ] || unset PI_CONFIG_ROOT
 _pi_config_root="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
 PI_PROFILE_SOURCE=none
 if [ -n "${PI_DOCKERIZED_PROFILE:-}" ]; then
@@ -105,7 +107,7 @@ unset _pi_config_root
 
 # Shared configuration, logging (print_*) and command modules.
 source "$REPO_ROOT/lib/config-lib.sh"
-for _cmd_module in help session extensions image update config profile; do
+for _cmd_module in help session sessions extensions image update config profile; do
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/cmd/$_cmd_module.sh"
 done

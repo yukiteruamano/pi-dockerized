@@ -227,16 +227,23 @@ build_env_args() {
 }
 
 # Variables the secrets file must not set: they load code into every process
-# (LD_*, NODE_OPTIONS, BASH_ENV), move the agent's home or tools, run a command
-# from `pi update` (PI_SELF_UPDATE_COMMAND), or override
-# what the wrapper tells the guard and the entrypoint (PI_DOCKERIZED_*). Docker
-# lets `-e` win over --env-file today, but the file is not the place for them.
+# (LD_*, NODE_OPTIONS, BASH_ENV, PYTHONPATH, ...), move the agent's home, its
+# session store or tools, turn the extension transpile cache back on (JITI_*),
+# redirect npm or Git (npm_config_*, GIT_CONFIG*, GIT_SSH_COMMAND, ...) or the
+# forwarded agents, run a command from `pi update` (PI_SELF_UPDATE_COMMAND),
+# or override what the wrapper tells the guard and the entrypoint
+# (PI_DOCKERIZED_*). Docker lets `-e` win over --env-file today, but the file
+# is not the place for them.
 # Usage: env_key_forbidden <KEY>
 env_key_forbidden() {
     case "$1" in
-    LD_PRELOAD | LD_LIBRARY_PATH | LD_AUDIT | NODE_OPTIONS | NODE_PATH | BASH_ENV | ENV | \
-        PATH | HOME | PI_CODING_AGENT_DIR | PI_DOCKERIZED_* | PI_SKIP_VERSION_CHECK | PI_TELEMETRY | \
-        PI_SELF_UPDATE_COMMAND)
+    LD_* | NODE_OPTIONS | NODE_PATH | BASH_ENV | ENV | PROMPT_COMMAND | PATH | HOME | \
+        PYTHONPATH | PYTHONSTARTUP | PERL5OPT | PERL5LIB | RUBYOPT | \
+        PI_CODING_AGENT_DIR | PI_CODING_AGENT_SESSION_DIR | PI_PACKAGE_DIR | PI_DOCKERIZED_* | \
+        PI_SKIP_VERSION_CHECK | PI_TELEMETRY | PI_SELF_UPDATE_COMMAND | JITI_* | \
+        npm_config_* | NPM_CONFIG_* | GIT_CONFIG* | GIT_SSH | GIT_SSH_COMMAND | GIT_ASKPASS | \
+        GIT_EXEC_PATH | GIT_TEMPLATE_DIR | GIT_DIR | GIT_WORK_TREE | GIT_COMMON_DIR | \
+        GIT_EXTERNAL_DIFF | GIT_PAGER | GIT_EDITOR | GNUPGHOME | SSH_AUTH_SOCK)
         return 0
         ;;
     esac
