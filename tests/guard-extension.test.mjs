@@ -181,6 +181,16 @@ const dir = installExtension("ext");
   check("vendored rule blocks nmap", without.results?.[0]?.block === true);
   check("host allow file permits it", withFile.results?.[0] === null);
 
+  // The wrapper sets the variable only when it mounts the host file: without
+  // it there is no allow file at all, so one a session writes into the
+  // (group-writable) agent dir is never picked up after /reload.
+  const empty = runEvents(dir, [bash("nmap 10.0.0.1")], { PI_DOCKERIZED_ALLOW_FILE: "" });
+  check("empty allow-file variable loads no allow file", empty.results?.[0]?.block === true);
+  check(
+    "index.ts has no default allow-file path",
+    !/allow\.json["']/.test(readFileSync(join(repo, "extensions/pi-security-guard/index.ts"), "utf8")),
+  );
+
   writeFileSync(allowFile, JSON.stringify([{ id: "all", pattern: ".*", reason: "x" }]));
   const overreach = runEvents(dir, [bash("cat .env")], { PI_DOCKERIZED_ALLOW_FILE: allowFile });
   check("allow file never overrides the backstops", overreach.results?.[0]?.block === true);

@@ -49,6 +49,16 @@ const allOf = (...parts) => parts.map((part) => `(?=[^\\n|;&]*${part})`).join(""
 const COMMAND_START =
   "(?:^|[;|&(`\\n{]\\s*)\\s*(?:(?:env|exec|nohup|time|command|xargs|(?:ba|z|da)?sh\\s+-c|[A-Za-z_]\\w*=\\S*)\\s+)*";
 
+// Commands that write, link or edit a file they name (the `.git` backstops).
+// `link`/`ln` (hard links) alias a git file so a project path writes it.
+const GIT_WRITE_VERB =
+  "cp|mv|tee|ln|link|install|chmod|chown|sed|perl|truncate|dd|touch|rm|mkdir|rmdir|" +
+  "patch|unzip|rsync|sponge|vi|vim|nvim|ex|ed|tar";
+
+// Wrappers that run their argument as a command (`command env`, `nohup env`).
+const ENV_WRAPPERS =
+  "(?:(?:command|exec|nohup|builtin|time|setsid|busybox|nice(?:\\s+-n)?(?:\\s+-?\\d+)?|timeout(?:\\s+-\\S+)*\\s+\\S+|stdbuf(?:\\s+-\\S+)*)\\s+)*";
+
 const KEY_TOKEN = `(?:\\.pem\\b(?!\\.pub\\b)|\\.key\\b(?!\\.pub\\b)|${KEY_FILE}|${BARE_KEY})`;
 
 export const DENY_BASH = [
@@ -103,8 +113,16 @@ export const DENY_BASH = [
   /\bgpg\b[^\n|;&]*--export-secret(-keys|-subkeys)?\b/i,
   /(^|[;|&(`\n])\s*\b(env|printenv|set|export|declare|typeset)\b\s*([;|&\n)`]|$)/i,
   // env/printenv with only flags or assignments and no command still dumps
-  // the environment: `env -0`, `printenv --null`, `env -u X`, `$(env FOO=1)`.
-  /(^|[;|&(`\n{])\s*(?:env|printenv)\b(?:\s+(?:-u\s*\S+|--unset[= ]\S+|-[-\w]+|[A-Za-z_]\w*=\S*))*\s*(?:[;|&\n)`}]|$)/,
+  // the environment: `env -0`, `printenv --null`, `env -u X`, `$(env FOO=1)`,
+  // also by path or behind a wrapper (`/usr/bin/env`, `command env`).
+  new RegExp(
+    `(^|[;|&(\`\\n{])\\s*${ENV_WRAPPERS}(?:[\\w.-]*\\/)*(?:env|printenv)\\b(?:\\s+(?:-u\\s*\\S+|--unset[= ]\\S+|-[-\\w]+|[A-Za-z_]\\w*=\\S*))*\\s*(?:[;|&\\n)\`}]|$)`,
+  ),
+  // BSD-style `ps e` (also `eww`, `auxe`) prints every process environment;
+  // `ps -e`/`-ef` (all processes) and `-o user` stay allowed.
+  /(?:^|[;|&(`\n{])\s*(?:[\w.-]*\/)*ps\s+(?:-(?![oOpPuUgGtCqk]\b)[a-zA-Z]+\s+)*[acfhjlmnrsuvwxSTXZ]*e[acefhjlmnrsuvwxSTXZ]*(?=[\s;|&)`]|$)/,
+  // awk walking the whole environment: `for (k in ENVIRON)`.
+  /\bfor\s*\(\s*\w+\s+in\s+ENVIRON\s*\)/,
   /\bexport\s+-p\b/i,
   /\bdeclare\s+-p\b/i,
   /\btypeset\s+-p\b/i,
@@ -133,15 +151,30 @@ export const DENY_BASH = [
   // (commit, add, ...) names no .git path and is unaffected. `git config`
   // writes are checked separately (gitConfigWrite).
   />{1,2}\|?\s*['"]?(?:[^\s'"|;&<>]*\/)?\.git(?:\/|['"\s;|&)]|$)/i,
-  /\b(?:cp|mv|tee|ln|install|chmod|chown|sed|perl|truncate|dd|touch|rm|mkdir|rmdir|patch|unzip)\b[^\n|;&]*(?:^|[\s'"=\/])\.git(?:\/|['"\s]|$)/i,
+  // `--exclude=.git` (tar, rsync) names it only to leave it out.
+  new RegExp(
+    `\\b(?:${GIT_WRITE_VERB})\\b[^\\n|;&]*(?:^|[\\s'"=\\/])(?<!--exclude(?:-dir)?[= ]['"]?)\\.git(?:\\/|['"\\s]|$)`,
+    "i",
+  ),
   /\b(?:python[0-9.]*|node|deno|bun|ruby|php)\b[^\n|;&]*(?:^|[\s'"=(\/])\.git\//i,
   // Entering the git dir would let relative paths (`hooks/x`) reach it.
   /\b(?:cd|pushd)\s+['"]?(?:[^\s'"|;&]*\/)?\.git(?:[\/\s'";&|)]|$)/i,
   /\bgit\b[^\n|;&]*\s-C\s*['"]?(?:[^\s'"|;&]*\/)?\.git(?:[\/\s'";&|)]|$)/i,
   /(?:>|>>)\s*['"]?[^\s'"|;&]*\.gitmodules\b/i,
-  /\b(?:cp|mv|tee|ln|install|sed|truncate|dd|touch)\b[^\n|;&]*\.gitmodules\b/i,
+  new RegExp(`\\b(?:${GIT_WRITE_VERB})\\b[^\\n|;&]*\\.gitmodules\\b`, "i"),
   // Config-defined programs, also through `git -c` (inline config).
-  /\bgit\b[^\n|;&]*\b(?:core\.(?:hookspath|fsmonitor|sshcommand|editor|pager|askpass)|credential\.helper|gpg\.(?:ssh\.)?program|include(?:if)?\.|diff\.external|filter\.[^\s=]*\.(?:clean|smudge|process))/i,
+  // init.templateDir copies hooks into the git dir on `git init`.
+  /\bgit\b[^\n|;&]*\b(?:core\.(?:hookspath|fsmonitor|sshcommand|editor|pager|askpass)|credential\.helper|gpg\.(?:ssh\.)?program|include(?:if)?\.|diff\.external|filter\.[^\s=]*\.(?:clean|smudge|process)|init\.templatedir)/i,
+  // `git init/clone --template` copies a session-written hooks dir into the
+  // git dir (also when re-initializing the project's repository), and
+  // `--separate-git-dir` moves the git dir where the write tool may reach it.
+  new RegExp(
+    `\\bgit\\b(?=[^\\n|;&]*\\b(?:init|clone)\\b)${allOf("\\s--(?:template|separate-git-dir)\\b")}`,
+    "i",
+  ),
+  // The same through the environment, plus whole config injection
+  // (GIT_CONFIG_COUNT/KEY_n/VALUE_n, GIT_CONFIG_GLOBAL, GIT_CONFIG_PARAMETERS).
+  /\bGIT_(?:TEMPLATE_DIR|DIR|WORK_TREE|COMMON_DIR|CONFIG_\w+|CONFIG)\s*=/,
   // Pi self-management: extensions, MCP servers and Pi itself are fixed at
   // image build time and must not be changed from inside a session.
   /\bpi\s+update\b/,
@@ -237,8 +270,9 @@ export function gitConfigWrite(command) {
 // --- globs aimed at secrets -------------------------------------------------
 // `cat .en[v]` or `cat auth.jso?` expand to a secret name at run time, so the
 // literal-name regexes never see it. A glob word counts when it can match a
-// secret name AND keeps literal text from that name's distinctive part
-// (`*.json` matches auth.json but is not aimed at it; `au?h.json` is).
+// secret name AND is aimed at it: it keeps literal text from that name's
+// distinctive part, or it has no `*` (a fixed-length `.??v` or `.???` can only
+// hit a handful of names). `*.json` matches auth.json but is not aimed at it.
 const GLOB_SECRETS = [
   [".env", ".env"],
   ["auth.json", "auth"],
@@ -297,23 +331,126 @@ const sharesBigram = (runs, core) =>
     return false;
   });
 
+// Key-file suffixes a glob may complete (`server.k?y`, `*.pe?`).
+const GLOB_KEY_SUFFIXES = [
+  [".key", ".key"],
+  [".pem", ".pem"],
+];
+
+// Glob tokens: a bracket expression, a wildcard or one literal character.
+const globTokens = (component) => component.match(/\[[^\]]+\]|[*?]|[^*?[]|\[/g) ?? [];
+
+// A concrete name built from the first `count` tokens, for a regex probe.
+const materialize = (tokens, count) =>
+  tokens
+    .slice(0, count)
+    .map((t) => (t === "*" ? "" : t === "?" ? "a" : t.length > 1 ? t[1] === "!" || t[1] === "^" ? "\0" : t[1] : t))
+    .join("");
+
+/** True when a glob component can match some name ending in `suffix`. */
+function globCanEndWith(component, re, suffix) {
+  const tokens = globTokens(component);
+  for (let count = 0; count <= tokens.length; count++) {
+    const stem = materialize(tokens, count) || (component.startsWith(".") ? "" : "x");
+    if (re.test(stem + suffix)) return true;
+  }
+  return false;
+}
+
 /** The secret name a glob word in `command` is aimed at, else undefined. */
 export function globTargetsSecret(command) {
   for (const word of command.split(/[\s;&|<>()`=,{}]+/)) {
     if (!GLOB_CHAR.test(word)) continue;
-    for (const component of word.split("/")) {
+    const components = word.split("/");
+    // /proc/<pid>/environ (also `/pro?/self/env*`): any process environment.
+    const procWord = components[0] === "" && components.length > 2 && globComponentRe(components[1]).test("proc");
+    for (const [i, component] of components.entries()) {
+      if (procWord && i === components.length - 1 && globComponentRe(component).test("environ")) {
+        return "environ";
+      }
       if (!GLOB_CHAR.test(component)) continue;
       const re = globComponentRe(component);
       const runs = globLiterals(component);
+      const aimed = (core) => sharesBigram(runs, core) || !component.includes("*");
       for (const [name, core] of GLOB_SECRETS) {
         // Like the shell, a leading wildcard never matches a leading dot.
         if (name.startsWith(".") && !component.startsWith(".")) continue;
-        if (re.test(name) && sharesBigram(runs, core)) return name;
+        if (re.test(name) && aimed(core)) return name;
+      }
+      // A literal `.pem`/`.key` tail is the verb-aware leak rules' business
+      // (`ls *.pem` lists names, `cat *.pem` is refused there).
+      for (const [suffix, core] of GLOB_KEY_SUFFIXES) {
+        if (component.toLowerCase().endsWith(suffix)) continue;
+        if (sharesBigram(runs, core) && globCanEndWith(component, re, suffix)) return `*${suffix}`;
       }
     }
   }
   return undefined;
 }
+
+// --- globs aimed at the git dir --------------------------------------------
+// `cp hook .gi?/hooks/` or `mv x .g[i]t/hooks/` reach the git dir without
+// naming it. A glob component that can match `.git`/`.gitmodules` counts in a
+// segment that writes, links, enters or redirects. Without `dotglob` a leading
+// wildcard never matches the leading dot, so `cp -r src/* dist/` is fine.
+const GIT_NAMES = [".git", ".gitmodules"];
+const GIT_GLOB_VERB = new RegExp(`^(?:[\\w.-]*\\/)*(?:${GIT_WRITE_VERB}|cd|pushd)$`, "i");
+
+/** The git name a glob word in a writing segment can expand to, else undefined. */
+export function globTargetsGit(command) {
+  const dotglob = /\bdotglob\b|\bGLOBIGNORE\b/.test(command);
+  for (const segment of command.split(/[;&|\n`(){}]+/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    const writes =
+      segment.includes(">") || words.includes("-C") || words.some((w) => GIT_GLOB_VERB.test(w));
+    if (!writes) continue;
+    for (const word of words) {
+      if (!GLOB_CHAR.test(word)) continue;
+      for (const component of word.replace(/^[<>|&\d]+/, "").split(/[\/=]/)) {
+        if (!GLOB_CHAR.test(component)) continue;
+        if (!dotglob && !component.startsWith(".")) continue;
+        const re = globComponentRe(component);
+        const hit = GIT_NAMES.find((name) => re.test(name));
+        if (hit) return hit;
+      }
+    }
+  }
+  return undefined;
+}
+
+// --- the agent dir ------------------------------------------------------------
+// ~/.pi/agent holds the session's credentials and host-owned state (auth.json,
+// mcp-auth.json, models.json with provider keys, trust.json, logs). Only the
+// listed entries may be named; the directory itself, `~/.pi`, any other entry
+// and `..` out of a listed one are refused, so `grep -r . ~/.pi/agent` or
+// `jq . ~/.pi/agent/a*.json` cannot sweep it.
+export const AGENT_HOME = "/home/coder";
+export const AGENT_DIR = `${AGENT_HOME}/.pi/agent`;
+export const AGENT_SAFE_ENTRIES = ["sessions", "skills", "prompts", "themes", "AGENTS.md", "settings.json", "mcp.json"];
+const HOME_REF = "(?:~|\\$HOME|\\$\\{HOME\\}|\\/home\\/coder)";
+const SEP = "\\/+(?:\\.\\/+)*";
+const WORD_END = "(?=[\\s'\"|;&)<>`]|$)";
+const SAFE_ENTRY = `(?:${AGENT_SAFE_ENTRIES.map(escapeRe).join("|")})(?:\\/|${WORD_END})`;
+// A project's own `.pi/` has no `agent/`: a relative `.pi/agent` is the home
+// one reached after `cd ~`.
+const AGENT_REF = `(?:${HOME_REF}${SEP}|(?<![^\\s'"=(])(?:\\.${SEP})?)\\.pi${SEP}agent`;
+export const AGENT_DIR_RE = new RegExp(
+  `${HOME_REF}${SEP}\\.pi(?:${SEP}agent)?(?:${SEP})?${WORD_END}|` +
+    `${AGENT_REF}(?:${SEP})?${WORD_END}|` +
+    `${AGENT_REF}${SEP}(?!${SAFE_ENTRY})|` +
+    `${AGENT_REF}${SEP}[^\\s'"|;&<>]*\\/\\.\\.(?:\\/|${WORD_END})`,
+);
+
+// Recursive readers aimed at the home or root directory reach the agent dir
+// too (`grep -r sk- ~`, `rg token /`, `cp -r ~ /tmp/pi/x`, `find ~ -exec`).
+const ANCESTOR = `[\\s'"=](?:${HOME_REF}\\/*|\\/home\\/*|\\/+)${WORD_END}`;
+export const ANCESTOR_SWEEP = [
+  new RegExp(
+    `\\b(?:grep|egrep|fgrep|zgrep)\\b${allOf("\\s-(?:[a-zA-Z]*[rR][a-zA-Z]*|-recursive|-dereference-recursive)\\b", ANCESTOR)}`,
+  ),
+  new RegExp(`\\b(?:rg|ag|ack|tar|zip|7z|cp|rsync|scp)\\b${allOf(ANCESTOR)}`),
+  new RegExp(`\\bfind\\b${allOf(ANCESTOR, "\\s-(?:exec|execdir|ok|okdir)\\b")}`),
+];
 
 // Denied read paths: secrets, keys, host credential/config files, process
 // environments. Case-insensitive: host bind mounts can be (macOS), so

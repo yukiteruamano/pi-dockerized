@@ -7,8 +7,11 @@
 // `globForm` keeps the shell's notion of which glob characters are live, for
 // the glob-aimed-at-a-secret check.
 //
+// Nested shells (`bash -c "…"`, `eval "…"`) are peeled by repeated passes and
+// by `nestedCommands`, which hands their payload back for a full evaluation.
+//
 // Out of scope (documented residual): values assembled at run time
-// (`a=.e; b=nv; cat $a$b`), command substitution and `base64 | sh` stagers.
+// (`a=.e; b=nv; cat $a$b`), non-empty command substitution and `base64 | sh`.
 // A regex cannot resolve those; the container boundary has to.
 
 /** Normalize `${IFS}`/`$IFS` and tab/newline ANSI-C escapes back to spaces. */
@@ -55,9 +58,21 @@ function decodeAnsiCBody(body) {
 
 const ANSI_C_RE = /\$'((?:[^'\\]|\\.)*)'/gs;
 
-/** Replace every `$'...'` string with its decoded literal. */
+/** Replace every `$'...'` string with its decoded literal (bash stops at NUL). */
 export function decodeAnsiC(cmd) {
-  return cmd.replace(ANSI_C_RE, (_, body) => decodeAnsiCBody(body));
+  return cmd.replace(ANSI_C_RE, (_, body) => decodeAnsiCBody(body).split("\0")[0]);
+}
+
+/**
+ * Drop expansions that are empty in an agent's shell, so they cannot split a
+ * token: `$()`, empty backticks, `$@`/`$*` (no positional parameters), and
+ * `$""` (a locale string). `.e$()nv` runs as `.env`.
+ */
+export function stripEmptyExpansions(cmd) {
+  return cmd
+    .replace(/\$\(\s*\)|`\s*`/g, "")
+    .replace(/\$\{?[@*]\}?/g, "")
+    .replace(/\$(?="")/g, "");
 }
 
 // Stand-in for a glob character the shell treats literally (quoted/escaped).
@@ -122,11 +137,50 @@ export function expandBraces(cmd) {
   return out;
 }
 
+// De-obfuscation passes: each one peels a quoting layer, so a payload nested
+// in `bash -c "…"` or `eval "…"` (quoted twice) is exposed by the second.
+const MAX_DEQUOTE_PASSES = 4;
+
 /** The command and the de-obfuscated forms to test it in (deduplicated). */
 export function shellVariants(cmd) {
-  const normalized = normalizeShell(cmd);
-  const decoded = dequote(decodeAnsiC(normalized));
-  return [...new Set([cmd, normalized, decoded, expandBraces(decoded)])];
+  const forms = [cmd];
+  let current = cmd;
+  for (let pass = 0; pass < MAX_DEQUOTE_PASSES; pass++) {
+    const normalized = stripEmptyExpansions(normalizeShell(current));
+    const decoded = stripEmptyExpansions(dequote(decodeAnsiC(normalized)));
+    forms.push(normalized, decoded, expandBraces(decoded));
+    if (decoded === current) break;
+    current = decoded;
+  }
+  return [...new Set(forms)];
+}
+
+// `bash -c '…'`, `sh -xc "…"`, `eval "…"`: the payload is a command line of
+// its own, with its own quoting and live globs.
+const NESTED_SHELL_RE =
+  /(?:^|[\s;&|(`{])(?:(?:[\w.-]*\/)*(?:ba|da|z|k|mk)?sh\s+(?:-[a-zA-Z]+\s+)*?-[a-zA-Z]*c[a-zA-Z]*|eval)\s+/g;
+
+/**
+ * Commands a shell would parse again: the arguments after `sh -c` or `eval`,
+ * up to the next unquoted operator, with one quoting layer removed.
+ */
+export function nestedCommands(cmd) {
+  const out = [];
+  for (const match of cmd.matchAll(NESTED_SHELL_RE)) {
+    let i = match.index + match[0].length;
+    let quote = "";
+    for (; i < cmd.length; i++) {
+      const c = cmd[i];
+      if (quote) {
+        if (c === quote) quote = "";
+        else if (c === "\\" && quote === '"') i++;
+      } else if (c === "'" || c === '"') quote = c;
+      else if (c === "\\") i++;
+      else if (";&|\n".includes(c)) break;
+    }
+    out.push(dequote(cmd.slice(match.index + match[0].length, i)).trim());
+  }
+  return out;
 }
 
 /**
@@ -134,8 +188,8 @@ export function shellVariants(cmd) {
  * escaped and `$'...'` ones are masked), braces expanded.
  */
 export function globForm(cmd) {
-  const ansi = normalizeShell(cmd).replace(ANSI_C_RE, (_, body) =>
-    maskGlobs(decodeAnsiCBody(body)),
+  const ansi = stripEmptyExpansions(normalizeShell(cmd)).replace(ANSI_C_RE, (_, body) =>
+    maskGlobs(decodeAnsiCBody(body).split("\0")[0]),
   );
   return expandBraces(dequote(ansi, { masked: true }));
 }

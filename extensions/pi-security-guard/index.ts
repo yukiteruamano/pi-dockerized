@@ -27,7 +27,11 @@
 //
 // Host-managed, read-only inputs (mounted by the wrapper, absent otherwise):
 //   PI_DOCKERIZED_ALLOW_FILE — extra allow rules (same shape as
-//                              policies/allow-patterns.json).
+//                              policies/allow-patterns.json). Set by the
+//                              wrapper only when it mounts the host file; with
+//                              no variable there is no allow file, so a
+//                              session-created ~/.pi/agent/allow.json (the
+//                              agent dir is group-writable) is never read.
 // Output:
 //   PI_DOCKERIZED_AUDIT_FILE — JSON lines, one per blocked call. The session
 //                              can write it, so it is a review aid, not
@@ -59,8 +63,7 @@ const KNOWN_MODES = ["strict", "balanced", "off"];
 const POLICY_MODE = (
   process.env.PI_DOCKERIZED_POLICY || "balanced"
 ).toLowerCase();
-const ALLOW_FILE =
-  process.env.PI_DOCKERIZED_ALLOW_FILE || "/home/coder/.pi/agent/allow.json";
+const ALLOW_FILE = process.env.PI_DOCKERIZED_ALLOW_FILE || "";
 const AUDIT_FILE =
   process.env.PI_DOCKERIZED_AUDIT_FILE || "/home/coder/.pi/agent/audit.log";
 const MAX_AUDIT_BYTES = 1024 * 1024;
@@ -85,7 +88,7 @@ const loadVendored = (name: string) =>
 
 // Optional host-side allow rules: a read-only mount the session cannot edit.
 const loadHostAllowRules = (): any[] =>
-  existsSync(ALLOW_FILE) ? loadCompiled(pathToFileURL(ALLOW_FILE)) : [];
+  ALLOW_FILE !== "" && existsSync(ALLOW_FILE) ? loadCompiled(pathToFileURL(ALLOW_FILE)) : [];
 
 const UNSAFE_PATTERNS = selectRules(
   loadVendored("unsafe-tool-patterns.json"),
