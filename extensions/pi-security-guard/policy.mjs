@@ -23,7 +23,7 @@ export { DENY_BASH, DENY_READ, DENY_SECRET_PATH, SECRET_PATH_RE, normalizeShell 
 
 // Bump when guard behavior changes. Single source of truth: the wrapper's
 // `version`/`doctor` read it from the image through selftest.mjs.
-export const GUARD_VERSION = 7;
+export const GUARD_VERSION = 8;
 
 // Longest value evaluated. Several vendored and backstop patterns scan with
 // `[^\n|;&]*`, which is quadratic on long lines: 100 KiB takes ~50 s. Beyond the

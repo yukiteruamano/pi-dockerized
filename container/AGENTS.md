@@ -11,9 +11,9 @@ into the image). Do not attempt to weaken or bypass them.
 - Treat `git push` (especially `--force`) as approval-required: explain first.
 - Do not control the host Docker daemon (no `docker system prune`, no privileged containers).
 - Do not install packages system-wide or change system configuration.
-- Do not try to change Pi's extensions, MCP servers or Pi itself from a session:
-  `pi update`, `pi install`, `pi remove` and `pi mcp add/remove` are blocked.
-  The user manages them from the host.
+- Do not try to change Pi's extensions, MCP servers, credentials or Pi itself
+  from a session: `pi update`, `pi install`, `pi remove`, `pi mcp add/remove`
+  and `pi auth login/logout` are blocked. The user manages them from the host.
 
 ## Files and secrets
 

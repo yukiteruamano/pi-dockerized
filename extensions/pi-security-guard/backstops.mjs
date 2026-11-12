@@ -33,7 +33,13 @@ export const DENY_SECRET_PATH = [/(^|[\s'"=:(/@,<>\-])\.env(?!\.example\b)/i];
 // `[\w.-]*` is retried at every offset and long tokens make it quadratic.
 const KEY_FILE =
   "(?<![\\w.-])(?:[\\w.-]*(?:_key|-key|_priv)|id_(?:rsa|dsa|ecdsa|ed25519|eddsa))(?![A-Za-z0-9])(?!\\.pub\\b)";
-const BARE_KEY = "(?<![\\w.-])(?:[\\w.-]*key)(?![A-Za-z0-9])(?!\\.pub\\b)";
+// Ordinary English words ending in "key" are not key material: `cat monkey.py`
+// and reading `hotkey` must pass, while `apikey`, `sshkey`, `server.key` and
+// `deploy_key` stay blocked. Only the exact word is exempt (`prodmonkey` or
+// `monkey_key` still match through the other branches).
+const SAFE_KEY_WORDS =
+  "monkey|donkey|turkey|hockey|jockey|whiskey|lackey|hotkey|turnkey|lowkey|smokey|pokey|hokey|mickey|malarkey";
+const BARE_KEY = `(?<![\\w.-])(?!(?:${SAFE_KEY_WORDS})(?![A-Za-z0-9]))(?:[\\w.-]*key)(?![A-Za-z0-9])(?!\\.pub\\b)`;
 // Each part somewhere later in the same command segment, in any order. One
 // lookahead per part keeps the scan linear; chained `[^\n|;&]*a[^\n|;&]*b`
 // is cubic on a long line of repeated flags.
@@ -143,6 +149,10 @@ export const DENY_BASH = [
   /\bpi\s+uninstall\b/,
   /\bpi\s+remove\b/,
   /\bpi\s+mcp\s+(?:add|remove|rm)\b/,
+  // `pi auth login/logout` (Pi 1.5.1) writes/deletes the host credential
+  // store: auth.json is bind-mounted read-write, so a session could log the
+  // user out or plant foreign credentials. Reading auth status stays fine.
+  /\bpi\s+auth\s+(?:login|logout)\b/,
 ];
 
 // --- git config -------------------------------------------------------------
@@ -307,6 +317,12 @@ export function globTargetsSecret(command) {
 
 // Denied read paths: secrets, keys, host credential/config files, process
 // environments. Case-insensitive: host bind mounts can be (macOS), so
-// `.ENV` may well open `.env`.
-export const DENY_READ =
-  /^\/proc\/(?:[^/]+\/)+environ$|(^|\/)\.env(\.(?!example$)|$)|\.pem$|\.key$|(^|\/)auth\.json$|(^|\/)mcp-auth\.json$|(^|\/)trust\.json$|(^|\/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|\/)\.ssh(\/|$)|(^|\/)\.npmrc$|(^|\/)\.mcp-auth(\/|$)|(^|\/)credentials(\.|$)|(^|\/)private-keys-v1\.d(\/|$)|(^|\/)\.gitconfig$|(^|\/)\.composio(\/|$)|(^|\/)\.(?:git-credentials|netrc)$|(^|\/)\.(?:aws|kube)(\/|$)|(^|\/)\.docker\/config\.json$|(^|\/)[\w.-]*(?:_key|-key|_priv)$|(^|\/)[\w.-]*key$/i;
+// `.ENV` may well open `.env`. The bare `*key` tail is composed in so it can
+// exempt the SAFE_KEY_WORDS (a path component that IS exactly such a word);
+// `monkey.key` or `hotkey_key` still match through the other branches.
+const DENY_READ_BASE =
+  /^\/proc\/(?:[^/]+\/)+environ$|(^|\/)\.env(\.(?!example$)|$)|\.pem$|\.key$|(^|\/)auth\.json$|(^|\/)mcp-auth\.json$|(^|\/)trust\.json$|(^|\/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|\/)\.ssh(\/|$)|(^|\/)\.npmrc$|(^|\/)\.mcp-auth(\/|$)|(^|\/)credentials(\.|$)|(^|\/)private-keys-v1\.d(\/|$)|(^|\/)\.gitconfig$|(^|\/)\.composio(\/|$)|(^|\/)\.(?:git-credentials|netrc)$|(^|\/)\.(?:aws|kube)(\/|$)|(^|\/)\.docker\/config\.json$|(^|\/)[\w.-]*(?:_key|-key|_priv)$/i;
+export const DENY_READ = new RegExp(
+  `${DENY_READ_BASE.source}|(^|\\/)(?!(?:${SAFE_KEY_WORDS})$)[\\w.-]*key$`,
+  "i",
+);
