@@ -122,7 +122,7 @@ pi-dockerized pull [TAG] [--no-verify|--allow-downgrade]  # Fetch the prebuilt s
 pi-dockerized rollback         # Go back to the image the last build/pull replaced
 pi-dockerized install [OPTS]   # Install/repair PATH, config, completions, aliases
 pi-dockerized uninstall [--image] [--purge-config [--all-profiles]]  # Remove the shell integration
-pi-dockerized update [--check|--yes|--no-build|--verify|--pi-version X]  # git pull + sync + rebuild
+pi-dockerized update [--check|--yes|--no-build|--[no-]verify|--pi-version X]  # git pull + sync + rebuild
 pi-dockerized upgrade          # Same as update (with prompt)
 pi-dockerized version          # Wrapper, image, guard, policy-set and Pi versions
 pi-dockerized config show|edit|get|set|path|sync|profiles   # Wrapper INI config
@@ -201,9 +201,10 @@ the image it replaces stays as `pi-dockerized:previous` and every build also
 gets a `<wrapper>-guard<N>` tag. A failed build or test leaves the current image
 untouched, and `rollback` undoes a bad update. `update` pins Pi to the release in
 the Dockerfile unless you pass `--pi-version latest|x.y.z`. Before pulling,
-`update` lists the incoming commits; with `--verify` (or
-`setting.verify_updates=true`) the upstream head must carry a valid signature,
-from a key listed in `.github/release-signers` when the checkout ships one.
+`update` lists the incoming commits, and the upstream head must carry a valid
+signature from a key listed in `.github/release-signers` (on by default:
+`setting.verify_updates`; `--no-verify` skips it once). Import the
+maintainer's key first (`gpg --recv-keys <fingerprint>`).
 Exactly the commit that was shown (and verified) is merged, and the image is
 built by the updated wrapper. `pull` refuses an image older than the current
 one or than this checkout (wrapper or guard version) unless you pass
@@ -296,8 +297,10 @@ Skills live under
 them up on next start (`/reload` inside a session). Project resources
 (`.pi/` extensions, skills, prompts, MCP servers) load only after you trust the
 project: the baked `defaultProjectTrust: "ask"` prompts in interactive sessions
-and skips them in `exec`/print mode. Trust granted with `/trust` is stored in
-`trust.json`.
+and skips them in `exec`/print mode. `trust.json` (saved decisions) is mounted
+read-only, so a session cannot pre-approve what it plants in the project: a
+`/trust` inside a session does not persist. Save decisions on the host with
+`pi-dockerized config trust edit`.
 
 ## Configuration
 
@@ -310,10 +313,11 @@ The root `~/.config/pi-dockerized/config` only routes commands to a profile.
 setting.ssh_agent_support=false
 setting.gpg_agent_support=false
 setting.docker_socket=false
+setting.git_readonly=true
 setting.network=host
 setting.security_policy=balanced
 setting.allowed_tools=
-setting.verify_updates=false
+setting.verify_updates=true
 setting.memory=4g
 setting.cpus=2
 setting.pids_limit=4096
@@ -345,6 +349,7 @@ Host paths are relative to the profile's directory
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | path with `$HOME` stripped | rw | Project files |
+| `$PROJECT_DIR/.git`, `.gitmodules` | idem | **ro** | Git metadata (`setting.git_readonly`, default on): commit, stash and fetch from the host |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
 | `home/.pi/agent/models.json` | `/home/coder/.pi/agent/models.json` | **ro** | Provider definitions (host-edited; absent or `--untrusted`: not mounted) |
@@ -354,12 +359,13 @@ Host paths are relative to the profile's directory
 | `home/.pi/agent/settings.json` | `/home/coder/.pi/agent/settings.json` | **ro** | Host preferences, seeded from the defaults (replaced by the packages file while Pi Packages are installed) |
 | `home/.pi/ext-agent/{settings.json,npm,git}` | `/home/coder/.pi/agent/{settings.json,npm,git}` | **ro** | Pi Packages installed with `pi install` (only once something is installed; absent with `--untrusted`) |
 | `home/.pi/agent/sessions/` | `/home/coder/.pi/agent/sessions/` | rw | Sessions (`sessionDir`) |
-| `home/.pi/agent/{auth,mcp-auth,trust}.json`, `mcp.log` | idem | rw | Runtime state |
+| `home/.pi/agent/{auth,mcp-auth}.json`, `mcp.log` | idem | rw | Runtime state |
+| `home/.pi/agent/trust.json` | idem | **ro** | Saved project-trust decisions (`config trust edit`) |
 | `home/.pi/agent/audit.log` | idem | rw | Guard audit log (blocked calls) |
 | `home/.pi/agent/allow.json` | idem | **ro** | Optional host allow rules for the guard (not mounted with `--untrusted`) |
 | `home/.npm/` | `/home/coder/.npm/` | rw | npm cache (npx MCP servers) |
 | `home/.cache/qmd/` | `/home/coder/.cache/qmd/` | rw | qmd index and downloaded models |
-| `~/.claude/`, `~/.agents/` | idem | ro | Compat skills |
+| `~/.claude/skills/`, `~/.agents/skills/` | idem | ro | Compat skills (only `skills/`, never the whole directories) |
 | `~/.composio/` | idem | rw | Composio CLI (optional custom mount) |
 | `/var/run/docker.sock` | idem | rw | Docker socket (opt-in, root-equivalent) |
 
