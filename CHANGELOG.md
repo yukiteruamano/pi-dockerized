@@ -49,7 +49,13 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   choose which account/keys it gets.
 - Sessions carry a `pi-dockerized.profile` label; `ps` (and `ps --json`) show
   the profile column. Shell/zsh completions cover the new keys and
-  subcommands.
+  subcommands: `--profile` offers the existing names plus `default`, and
+  `config profiles` completes `list|create|remove` (remove with names).
+- Fixed the zsh completion for `run`/`shell`/`exec`/`models`: a missing line
+  continuation made zsh execute `'--timeout[...]'` as a command, breaking
+  completion with an error instead of offering the session flags. Reload the
+  shell (`exec zsh` / new terminal) after upgrading so the fixed functions
+  load.
 
 ### Security (guard 7)
 

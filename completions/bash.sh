@@ -32,10 +32,11 @@ _pi_dockerized() {
         return 0
         ;;
     --profile)
+        # "default" is the root profile (escapes setting.default_profile).
         local root="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles"
-        if [ -d "$root" ]; then
-            mapfile -t COMPREPLY < <(compgen -W "$(ls "$root")" -- "${cur}")
-        fi
+        local names="default"
+        [ -d "$root" ] && names="$names $(ls "$root")"
+        mapfile -t COMPREPLY < <(compgen -W "$names" -- "${cur}")
         return 0
         ;;
     --dir)
@@ -69,6 +70,12 @@ _pi_dockerized() {
     profiles)
         if _pi_has_word config; then
             mapfile -t COMPREPLY < <(compgen -W "list create remove" -- "${cur}")
+            return 0
+        fi
+        ;;
+    create)
+        # `config profiles create <new name>`: nothing to complete.
+        if _pi_has_word profiles; then
             return 0
         fi
         ;;

@@ -39,11 +39,17 @@ _pi_dockerized() {
     )
 
     _arguments -C \
-        '--profile[Use a named profile (own config, keys and state)]:profile name:' \
+        '--profile[Use a named profile (own config, keys and state)]:profile name:->profiles' \
         '1: :->cmds' \
         '*:: :->args'
 
     case $state in
+        profiles)
+            local -a profile_names
+            profile_names=(default)
+            profile_names+=(${(f)"$(ls "${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles" 2>/dev/null)"})
+            _describe -t profiles 'profile' profile_names
+            ;;
         cmds)
             _describe -t commands 'pi-dockerized command' commands
             ;;
@@ -53,7 +59,7 @@ _pi_dockerized() {
                     _arguments \
                         '--untrusted[Strictest setup: strict policy, bridge network, no forwarding or mounts]' \
                         '--policy[Security policy for this session]:policy:(strict balanced off)' \
-                        '--network[Network for this session]:network:(host bridge)'
+                        '--network[Network for this session]:network:(host bridge)' \
                         '--timeout[Time limit for the session]:duration:' \
                         '--dir[Project directory]:directory:_files -/' \
                         '*:directory:_files -/'
@@ -88,6 +94,21 @@ _pi_dockerized() {
                             ;;
                         sync)
                             _values 'flag' --check
+                            ;;
+                        profiles)
+                            case $words[3] in
+                                remove)
+                                    local -a profile_names
+                                    profile_names=(${(f)"$(ls "${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles" 2>/dev/null)"})
+                                    _describe -t profiles 'profile' profile_names
+                                    ;;
+                                create)
+                                    # A new profile name: nothing to complete.
+                                    ;;
+                                *)
+                                    _values 'profiles subcommand' list create remove
+                                    ;;
+                            esac
                             ;;
                         *)
                             local -a config_cmds
