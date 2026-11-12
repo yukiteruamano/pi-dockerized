@@ -9,21 +9,20 @@
 # CONSTANTS
 # ============================================
 
-# Root of every wrapper config tree. The default profile lives directly in it;
-# a named profile (--profile NAME / PI_DOCKERIZED_PROFILE) lives in
-# profiles/NAME with its own config, secrets file, MCP servers and state, so
-# keys, policies and sessions never mix between contexts.
+# Root of every wrapper config tree. Every profile, the default one included,
+# lives in profiles/NAME with its own config, secrets file, MCP servers and
+# state, so keys, policies and sessions never mix between contexts. The root
+# itself only holds the routing config (ROOT_CONFIG_FILE: default_profile and
+# profile.map.*); layouts from older versions are migrated by layout.sh.
 PI_CONFIG_ROOT="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
+ROOT_CONFIG_FILE="$PI_CONFIG_ROOT/config"
 PI_PROFILE="${PI_DOCKERIZED_PROFILE:-}"
 if [ -n "$PI_PROFILE" ] && ! [[ "$PI_PROFILE" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
     echo "pi-dockerized: invalid profile '$PI_PROFILE' (use a-z, 0-9, - or _)" >&2
     PI_PROFILE=""
 fi
-if [ -n "$PI_PROFILE" ]; then
-    CONFIG_DIR="${CONFIG_DIR:-$PI_CONFIG_ROOT/profiles/$PI_PROFILE}"
-else
-    CONFIG_DIR="${CONFIG_DIR:-$PI_CONFIG_ROOT}"
-fi
+# PI_PROFILE stays empty for the default profile ("default" on labels).
+CONFIG_DIR="${CONFIG_DIR:-$PI_CONFIG_ROOT/profiles/${PI_PROFILE:-default}}"
 CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config}"
 
 # Self-contained Pi state tree. The wrapper owns all of Pi's runtime state under
@@ -290,11 +289,11 @@ path_within() {
 # Profile mapped to a directory by `profile.map.<key>=<path>:<profile>` lines
 # in the ROOT config (never a profile's: mappings must not chain, and a file
 # inside a project must never pick the profile). Longest matching path wins.
-# Prints the profile name ("default" = the root profile), or nothing.
+# Prints the profile name ("default" included), or nothing.
 # Usage: mapped=$(profile_for_dir "/abs/dir")
 profile_for_dir() {
     local dir="$1" best="" best_len=-1 value path prof
-    [ -f "$PI_CONFIG_ROOT/config" ] || return 0
+    [ -f "$ROOT_CONFIG_FILE" ] || return 0
     while IFS= read -r value; do
         value="${value#*=}"
         value="${value#"${value%%[![:space:]]*}"}"
@@ -312,8 +311,15 @@ profile_for_dir() {
             best="$prof"
             best_len=${#path}
         fi
-    done < <(grep '^[[:space:]]*profile\.map\.[A-Za-z0-9_.-]*[[:space:]]*=' "$PI_CONFIG_ROOT/config" 2>/dev/null)
+    done < <(grep '^[[:space:]]*profile\.map\.[A-Za-z0-9_.-]*[[:space:]]*=' "$ROOT_CONFIG_FILE" 2>/dev/null)
     printf '%s' "$best"
+}
+
+# setting.default_profile from the root config (empty when unset).
+# Usage: name=$(root_default_profile)
+root_default_profile() {
+    sed -n 's/^[[:space:]]*setting\.default_profile[[:space:]]*=[[:space:]]*//p' "$ROOT_CONFIG_FILE" 2>/dev/null |
+        head -n 1 | tr -d '[:space:]'
 }
 
 # Check if Docker image exists locally

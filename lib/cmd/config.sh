@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# config.sh - the `config` command (show/edit/get/set/path/sync/pi/allow/profiles)
+# config.sh - the `config` command (show/edit/get/set/path/sync/pi/allow)
 # and `audit`. Everything here is host-side: no Docker daemon needed.
 # Sourced by bin/pi-dockerized (not executable directly).
 # NOTE: no "set -e" — library file; callers control their own error handling.
@@ -52,98 +52,6 @@ config_agent_file() {
     *)
         print_error "Usage: $0 config $kind [path|edit]"
         exit 1
-        ;;
-    esac
-}
-
-# List the named profiles that exist.
-list_profiles() {
-    local dir name found=false
-    if [ -z "$PI_PROFILE" ]; then echo "default (active)"; else echo "default"; fi
-    for dir in "$PI_CONFIG_ROOT"/profiles/*/; do
-        [ -d "$dir" ] || continue
-        name="$(basename "$dir")"
-        found=true
-        if [ "$name" = "$PI_PROFILE" ]; then echo "$name (active)"; else echo "$name"; fi
-    done
-    [ "$found" = true ] || print_info "No named profiles yet: use '$0 config profiles create NAME' to create one."
-}
-
-# Validate a profile name for create/remove ("default" is the root profile).
-_validate_profile_name() {
-    local name="$1"
-    if [ -z "$name" ]; then
-        print_error "Usage: $0 config profiles [list|create NAME|remove NAME [--yes]]"
-        return 1
-    fi
-    if [ "$name" = default ]; then
-        print_error "'default' is the root profile; it always exists and cannot be removed."
-        return 1
-    fi
-    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
-        print_error "Invalid profile name '$name' (use a-z, 0-9, - or _, up to 32 characters)."
-        return 1
-    fi
-}
-
-# `config profiles [list|create NAME|remove NAME [--yes]]`: named profiles are
-# whole separate config trees (config, secrets file, keys, sessions) under
-# $PI_CONFIG_ROOT/profiles/. Creation is explicit so a typo in --profile can
-# never silently run a session on a fresh empty profile.
-manage_profiles() {
-    local action="${1:-list}" name="${2:-}" dir
-    case "$action" in
-    list)
-        list_profiles
-        ;;
-    create)
-        _validate_profile_name "$name" || exit "$E_USAGE"
-        dir="$PI_CONFIG_ROOT/profiles/$name"
-        if [ -d "$dir" ]; then
-            print_error "Profile '$name' already exists."
-            exit "$E_USAGE"
-        fi
-        # Seed the profile's own config file and state tree, exactly where the
-        # wrapper will look for them when run with --profile NAME.
-        (
-            CONFIG_DIR="$dir"
-            CONFIG_FILE="$dir/config"
-            PI_HOME="$dir/home"
-            EXT_AGENT_DIR="$PI_HOME/.pi/ext-agent"
-            init_config_file && ensure_pi_dirs
-        ) || exit 1
-        print_success "Created profile '$name' at $dir"
-        print_info "Configure it with '$0 --profile $name install' (keys, settings) or '$0 --profile $name config edit'."
-        ;;
-    remove)
-        _validate_profile_name "$name" || exit "$E_USAGE"
-        dir="$PI_CONFIG_ROOT/profiles/$name"
-        if [ ! -d "$dir" ]; then
-            print_error "Profile '$name' does not exist."
-            exit "$E_USAGE"
-        fi
-        if docker ps --filter "label=pi-dockerized.profile=$name" --format '{{.Names}}' 2>/dev/null | grep -q .; then
-            print_error "Profile '$name' has running sessions; stop them first ('$0 ps')."
-            exit 1
-        fi
-        if [ "${3:-}" != "--yes" ]; then
-            local answer=""
-            printf "Delete profile '%s' and ALL its state (config, secrets, sessions) at %s? [y/N] " "$name" "$dir"
-            read -r answer || true
-            case "$answer" in
-            y | Y | yes | YES) ;;
-            *)
-                print_info "Aborted."
-                return 0
-                ;;
-            esac
-        fi
-        rm -rf -- "$dir"
-        print_success "Removed profile '$name'."
-        ;;
-    *)
-        print_error "Usage: $0 config profiles [list|create NAME|remove NAME [--yes]]"
-        exit "$E_USAGE"
         ;;
     esac
 }
@@ -206,11 +114,12 @@ show_config() {
         config_agent_file allow "${1:-path}"
         ;;
     profiles)
-        manage_profiles "$@"
+        print_error "Profiles moved to their own command: '$0 profile ${1:-list}'."
+        exit "$E_USAGE"
         ;;
     *)
         print_error "Unknown config subcommand: $subcommand"
-        echo "Usage: $0 config [show|edit|get|set|path|sync|pi|allow|profiles]" >&2
+        echo "Usage: $0 config [show|edit|get|set|path|sync|pi|allow]" >&2
         exit 1
         ;;
     esac

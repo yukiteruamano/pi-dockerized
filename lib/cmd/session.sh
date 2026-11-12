@@ -42,7 +42,7 @@ maybe_switch_mapped_profile() {
     [ "$mapped" = "${PI_PROFILE:-default}" ] && return 0
     if [ "$mapped" != default ] && [ ! -d "$PI_CONFIG_ROOT/profiles/$mapped" ]; then
         print_error "profile.map points '$dir' at profile '$mapped', which does not exist."
-        print_info "Create it with '$0 config profiles create $mapped' or fix the mapping in $PI_CONFIG_ROOT/config."
+        print_info "Create it with '$0 profile create $mapped' or fix the mapping in $PI_CONFIG_ROOT/config."
         exit "$E_CONFIG"
     fi
     # To stderr: exec's stdout is pipeable command output.

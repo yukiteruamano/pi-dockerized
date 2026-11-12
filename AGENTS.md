@@ -15,7 +15,7 @@ No package manager files and no build step for the wrapper itself.
 - `bin/pi-dockerized` — Main wrapper, no extension: parses `--profile`, sources
   the libraries and dispatches (run, exec, shell, auth, models, mcp, extensions,
   stats, doctor, audit, ps, stop, install, uninstall, upgrade, update, build,
-  pull, rollback, version, config, clean). Reached via `<install>/bin` on PATH;
+  pull, rollback, version, config, profile, clean). Reached via `<install>/bin` on PATH;
   `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/pi-dockerized install`
   when present, else clones to `~/.local/share/pi-dockerized` and runs it there.
@@ -25,13 +25,16 @@ No package manager files and no build step for the wrapper itself.
   (what may be mounted and where), `state.sh` (host-state seeding/sync/perms),
   `gpg-ssh.sh` (agent forwarding), `docker-args.sh` (docker run args, incl.
   `build_pi_args`), `settings.sh` (config file I/O, `config get/set`),
+  `layout.sh` (root routing config and the migration from the old layout),
   `parse.sh` (mounts/env args), `overrides.sh` (`--untrusted`/`--policy`/
   `--network` session flags) and `prompts.sh` (interactive setup, output).
   **Not executable directly.** Keep each module under ~500 lines.
 - `lib/cmd/` — Command modules sourced by the wrapper: `session.sh` (run/exec/
   shell/auth/doctor/…: `prepare_session` → `build_session_cmd` →
   `launch_session`), `image.sh` (build/pull/rollback/clean/version), `update.sh`,
-  `config.sh` (config + audit) and `help.sh`. **Not executable directly.**
+  `config.sh` (config + audit), `profile.sh` (every named-profile operation:
+  list/create/remove/show/path/check/fix/run) and `help.sh`. **Not executable
+  directly.**
 - `lib/install-lib.sh` + `lib/install/` — Install/uninstall wizard sourced by the
   wrapper (`rc.sh`, `sections.sh`, `uninstall.sh`). **Not executable directly.**
 - `pi-dockerized.sh`, `setup.sh`, `run-simple.sh` (root) — removed (were deprecated compat shims).
@@ -83,7 +86,9 @@ pi-dockerized pull [TAG] [--no-verify|--allow-downgrade]  # Prebuilt signed imag
 pi-dockerized rollback                        # Previous image back to latest
 pi-dockerized version                         # Wrapper, image, guard, policies, Pi
 pi-dockerized config show|edit|get|set|path|sync            # Wrapper INI config
-pi-dockerized config profiles [list|create NAME|remove NAME [--yes]]  # Named profiles
+pi-dockerized profile [list|create NAME|remove NAME [--yes]]  # Named profiles
+pi-dockerized profile show|path|check|fix [NAME]  # Inspect, audit, repair one
+pi-dockerized profile run NAME [RUN ARGS]         # = --profile NAME run
 pi-dockerized config pi|allow [path|edit]     # mcp.json / guard allow.json
 pi-dockerized uninstall [--image] [--purge-config [--all-profiles]]
 pi-dockerized clean                           # Remove Docker image (all tags)
@@ -179,7 +184,7 @@ stderr so command output stays pipeable. Color codes are plain variables
 
 ### Shared Logic (lib/config/)
 
-- `PI_HOME` (`~/.config/pi-dockerized/home`) — self-contained host state root
+- `PI_HOME` (`~/.config/pi-dockerized/profiles/<name>/home`) — self-contained host state root
   mirroring the container home; all mounts source from here.
 - `PI_CONFIG_ROOT` / `PI_PROFILE` / `CONFIG_DIR` — the root of all wrapper
   configs, the active profile (`--profile`) and its directory.
@@ -241,7 +246,7 @@ setting.verify_updates=false
 setting.memory=4g
 setting.cpus=2
 setting.pids_limit=4096
-setting.env_file=~/.config/pi-dockerized/env
+setting.env_file=~/.config/pi-dockerized/profiles/default/env
 setting.theme=system
 setting.model=sonnet
 setting.default_profile=
@@ -249,15 +254,30 @@ mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 profile.map.work=~/work:acme
 ```
 
-Profiles are created explicitly (`config profiles create NAME` or
-`--profile NAME install`); any other command naming an unknown profile exits 3.
+Profiles are created explicitly (`profile create NAME` or
+`--profile NAME install`, both through `claim_profile_dir`: atomic `mkdir`,
+case and `-`/`_` look-alikes refused); any other command naming an unknown
+profile exits 3 (`profile` itself is exempt so a dangling default can be
+repaired). A profile inherits nothing from the root config, and its
+`env_file` must resolve inside its own directory (`env_file_in_profile`;
+profiles are siblings, so none can reach another's). `profile check|fix` audit
+and repair one profile; they reuse `check_agent_state`/`repair_agent_state`
+(`state.sh`), the per-profile halves of `config sync`.
 `setting.default_profile` and `profile.map.*` are read from the ROOT config
 only (bin/pi-dockerized resolves them before the library loads; `profile_for_dir`
 in `core.sh` does the longest-prefix mapping, `maybe_switch_mapped_profile` in
 `lib/cmd/session.sh` re-execs with `--profile`). `--profile default` names the
-root profile. Sessions carry a `pi-dockerized.profile` label.
+default profile (`profiles/default`, like any other). The root config
+(`ROOT_CONFIG_FILE`) holds only routing: `config set default_profile` writes it
+from any profile and `profile root edit` opens it. `layout.sh` owns it and
+`migrate_legacy_layout`, run by `main` before any command: up to 0.16 the
+default profile lived in the root itself, and the first run moves it into
+`profiles/default` (staged in `profiles/.default.migrating`, renamed when
+complete; resumable; `env_file` rewritten; routing kept in the root).
+`update`/`upgrade` sync with the freshly pulled binary so it migrates at once.
+Sessions carry a `pi-dockerized.profile` label.
 
-Secrets only travel via `setting.env_file` (dotenv under the config dir,
+Secrets only travel via `setting.env_file` (dotenv under the profile dir,
 `docker --env-file`, never mounted). The loader reads the file in one pass and
 reports unknown settings, invalid values and stray lines with their line number.
 `config set` / `save_config` edit in place: comments and unknown entries survive.
@@ -326,6 +346,8 @@ reports unknown settings, invalid values and stray lines with their line number.
   refresh the vendored files with `scripts/refresh-policies.sh`.
 
 ## Volume Mounts Reference
+
+Host paths are relative to the profile directory (`profiles/<name>/`).
 
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|

@@ -4,8 +4,42 @@
 # Zsh completion for pi-dockerized
 # Source this file in your ~/.zshrc or place in /usr/local/share/zsh/site-functions/
 
+# Existing profile names; with "default", the root profile too.
+_pi_dockerized_profiles() {
+    local -a names
+    names=(${(f)"$(ls "${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles" 2>/dev/null)"})
+    names=(${names:#default})
+    [[ "$1" == default ]] && names=(default $names)
+    _describe -t profiles 'profile' names
+}
+
+# Session flags (run/shell/exec); run adds --resume/--list, exec takes a
+# prompt instead of a directory.
+_pi_dockerized_session() {
+    local -a specs
+    specs=(
+        '--untrusted[Strictest setup: strict policy, bridge network, no forwarding or mounts]'
+        '--policy[Security policy for this session]:policy:(strict balanced off)'
+        '--network[Network for this session]:network:(host bridge)'
+        '--timeout[Time limit for the session]:duration:'
+        '--dir[Project directory]:directory:_files -/'
+    )
+    case $1 in
+        run)
+            specs+=(
+                '--resume[Resume a previous session (bare: picker)]::session id:'
+                '--list[List previous sessions]'
+                '*:directory:_files -/'
+            )
+            ;;
+        shell) specs+=('*:directory:_files -/') ;;
+        exec) specs+=('*:prompt:') ;;
+    esac
+    _arguments $specs
+}
+
 _pi_dockerized() {
-    local -a commands session_flags settings
+    local -a commands settings
     commands=(
         'run:Run Pi in Docker (default: current directory)'
         'exec:Run a non-interactive prompt (pi --print)'
@@ -28,10 +62,10 @@ _pi_dockerized() {
         'rollback:Go back to the image the last build/pull replaced'
         'version:Show wrapper, image, guard, policy-set and Pi versions'
         'config:Show, edit, get/set settings, print config file path'
+        'profile:Profiles (list|create|remove|show|path|check|fix|run|root)'
         'clean:Remove the Docker image (all tags)'
         'help:Show help message'
     )
-    session_flags=(--untrusted --policy --network --timeout --resume --list --dir)
     settings=(
         ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
         gpg_relay docker_socket network security_policy allowed_tools verify_updates
@@ -40,107 +74,153 @@ _pi_dockerized() {
 
     _arguments -C \
         '--profile[Use a named profile (own config, keys and state)]:profile name:->profiles' \
+        '(- :)'{-h,--help}'[Show help message]' \
         '1: :->cmds' \
         '*:: :->args'
 
     case $state in
         profiles)
-            local -a profile_names
-            profile_names=(default)
-            profile_names+=(${(f)"$(ls "${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles" 2>/dev/null)"})
-            _describe -t profiles 'profile' profile_names
+            _pi_dockerized_profiles default
             ;;
         cmds)
             _describe -t commands 'pi-dockerized command' commands
             ;;
         args)
             case $words[1] in
-                run|shell|exec|models)
-                    _arguments \
-                        '--untrusted[Strictest setup: strict policy, bridge network, no forwarding or mounts]' \
-                        '--policy[Security policy for this session]:policy:(strict balanced off)' \
-                        '--network[Network for this session]:network:(host bridge)' \
-                        '--timeout[Time limit for the session]:duration:' \
-                        '--dir[Project directory]:directory:_files -/' \
-                        '*:directory:_files -/'
+                run|shell|exec)
+                    _pi_dockerized_session $words[1]
                     ;;
                 mcp)
-                    _values 'mcp subcommand' list login logout
+                    (( CURRENT == 2 )) && compadd list login logout
                     ;;
                 extensions|plugin)
-                    _values 'extensions subcommand' list install remove update path edit
+                    if (( CURRENT == 2 )); then
+                        compadd list install remove update path edit
+                    else
+                        case $words[2] in
+                            install|add|update) compadd -- --allow-scripts ;;
+                        esac
+                    fi
                     ;;
                 audit)
-                    _values 'audit option' -n --summary --clear --explain
+                    compadd -- -n --summary --clear --explain
                     ;;
                 ps|stats)
-                    _values 'output format' --json
+                    compadd -- --json
                     ;;
-                doctor)
-                    _values 'doctor flag' --fix
+                doctor|debug)
+                    compadd -- --fix
                     ;;
                 stop)
                     local -a names
                     names=(${(f)"$(docker ps --filter label=pi-dockerized=1 --format '{{.Names}}' 2>/dev/null)"})
-                    _values 'session' --all --yes --force $names
+                    compadd -- --all --yes --force $names
                     ;;
                 config)
+                    if (( CURRENT == 2 )); then
+                        local -a config_cmds
+                        config_cmds=(
+                            'show:Show current configuration (--sources for origins)'
+                            'edit:Edit wrapper config file in $EDITOR'
+                            'get:Print one setting'
+                            'set:Validate and save one setting'
+                            'path:Print wrapper config file path'
+                            'sync:Repair host-side Pi state (--check for drift only)'
+                            'pi:Show or edit the Pi agent config (path|edit)'
+                            'allow:Show or edit the host allow rules for the guard'
+                        )
+                        _describe -t config_cmds 'config subcommand' config_cmds
+                        return
+                    fi
                     case $words[2] in
-                        get|set)
-                            _values 'setting' $settings
+                        show) compadd -- --sources ;;
+                        get)
+                            if (( CURRENT == 3 )); then compadd $settings; else compadd -- --source; fi
                             ;;
-                        pi|allow)
-                            _values 'action' path edit
+                        set)
+                            if (( CURRENT == 3 )); then
+                                compadd $settings
+                            elif (( CURRENT == 4 )); then
+                                case $words[3] in
+                                    ssh_agent_support|gpg_agent_support|gpg_allow_main_socket|gpg_autostart_agent|gpg_relay|docker_socket|verify_updates)
+                                        compadd true false ;;
+                                    network) compadd host bridge ;;
+                                    security_policy) compadd strict balanced off ;;
+                                    pids_limit) compadd 4096 unlimited ;;
+                                    default_profile) _pi_dockerized_profiles default ;;
+                                    env_file) _files ;;
+                                esac
+                            fi
                             ;;
-                        sync)
-                            _values 'flag' --check
+                        sync) compadd -- --check ;;
+                        pi|allow) (( CURRENT == 3 )) && compadd path edit ;;
+                    esac
+                    ;;
+                profile)
+                    if (( CURRENT == 2 )); then
+                        local -a profile_cmds
+                        profile_cmds=(
+                            'list:List named profiles (the active one is marked)'
+                            'create:Create a profile with its own config and state'
+                            'remove:Delete a profile and all its state'
+                            'show:Show the settings of a profile (--sources for origins)'
+                            'path:Print the directory of a profile'
+                            'check:Audit a whole profile (read-only)'
+                            'fix:Repair what check reports, then check again'
+                            'run:Start a session with a profile'
+                            'root:Show or edit the routing config (default_profile, profile.map)'
+                        )
+                        _describe -t profile_cmds 'profile subcommand' profile_cmds
+                        return
+                    fi
+                    case $words[2] in
+                        root)
+                            (( CURRENT == 3 )) && compadd path edit
                             ;;
-                        profiles)
-                            case $words[3] in
-                                remove)
-                                    local -a profile_names
-                                    profile_names=(${(f)"$(ls "${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}/profiles" 2>/dev/null)"})
-                                    _describe -t profiles 'profile' profile_names
-                                    ;;
-                                create)
-                                    # A new profile name: nothing to complete.
-                                    ;;
-                                *)
-                                    _values 'profiles subcommand' list create remove
-                                    ;;
-                            esac
+                        remove|rm)
+                            if (( CURRENT == 3 )); then _pi_dockerized_profiles; else compadd -- --yes; fi
                             ;;
-                        *)
-                            local -a config_cmds
-                            config_cmds=(
-                                'show:Show current configuration'
-                                'edit:Edit wrapper config file in $EDITOR'
-                                'get:Print one setting'
-                                'set:Validate and save one setting'
-                                'path:Print wrapper config file path'
-                                'sync:Repair host-side Pi state (--check for drift only)'
-                                'pi:Show or edit the Pi agent config (path|edit)'
-                                'allow:Show or edit the host allow rules for the guard'
-                                'profiles:List, create or remove named profiles'
-                            )
-                            _describe -t config_cmds 'config subcommand' config_cmds
+                        show)
+                            compadd -- --sources
+                            (( CURRENT == 3 )) && _pi_dockerized_profiles default
+                            ;;
+                        path|check|fix)
+                            (( CURRENT == 3 )) && _pi_dockerized_profiles default
+                            ;;
+                        run)
+                            if (( CURRENT == 3 )); then
+                                _pi_dockerized_profiles default
+                            else
+                                shift 2 words
+                                (( CURRENT -= 2 ))
+                                _pi_dockerized_session run
+                            fi
                             ;;
                     esac
                     ;;
                 upgrade|update)
-                    _values 'self-update flag' --check --yes --no-build --verify --pi-version
+                    case $words[CURRENT-1] in
+                        --pi-version) compadd latest ;;
+                        *) compadd -- --check --yes --no-build --verify --pi-version ;;
+                    esac
                     ;;
                 build)
-                    _values 'build flag' --pi-version --bust-cache --fresh
+                    case $words[CURRENT-1] in
+                        --pi-version) compadd latest ;;
+                        *) compadd -- --pi-version --bust-cache --fresh ;;
+                    esac
                     ;;
                 pull)
-                    _values 'pull flag' --no-verify --allow-downgrade
+                    compadd -- --no-verify --allow-downgrade
                     ;;
                 install)
-                    _values 'install flag' --yes --only
+                    case $words[CURRENT-1] in
+                        --only) _sequence compadd - config completions aliases global path build ;;
+                        *) compadd -- --yes --only --help ;;
+                    esac
                     ;;
                 uninstall)
-                    _values 'uninstall flag' --yes --image --purge-config --all-profiles
+                    compadd -- --yes --image --purge-config --all-profiles
                     ;;
             esac
             ;;

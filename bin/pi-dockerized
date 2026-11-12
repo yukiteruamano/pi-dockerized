@@ -58,8 +58,8 @@ fi
 
 # Profile resolution order: --profile / PI_DOCKERIZED_PROFILE (explicit) >
 # profile.map (per project, applied later in main) > setting.default_profile
-# (root config). `--profile default` names the root profile, escaping an
-# inherited default_profile. PI_PROFILE_SOURCE tells the mapping step whether
+# (root config). `--profile default` names the default profile
+# (profiles/default), escaping an inherited default_profile. PI_PROFILE_SOURCE tells the mapping step whether
 # the choice was explicit. Exit code 3 = bad host config (E_CONFIG).
 _pi_config_root="${PI_CONFIG_ROOT:-$HOME/.config/pi-dockerized}"
 PI_PROFILE_SOURCE=none
@@ -89,14 +89,15 @@ export PI_PROFILE_SOURCE
 
 # A named profile must already exist: a typo must not silently run a session
 # with a fresh empty profile and default settings. Only `install` creates one
-# implicitly; `config profiles create NAME` is the explicit path.
+# implicitly; `profile create NAME` is the explicit path. `profile` itself
+# stays usable so a dangling default_profile can be inspected and repaired.
 if [ -n "${PI_DOCKERIZED_PROFILE:-}" ] && [ ! -d "$_pi_config_root/profiles/$PI_DOCKERIZED_PROFILE" ] &&
-    [ "${1:-}" != install ]; then
+    [ "${1:-}" != install ] && [ "${1:-}" != profile ]; then
     echo "pi-dockerized: profile '$PI_DOCKERIZED_PROFILE' does not exist." >&2
     if [ "$PI_PROFILE_SOURCE" = default ]; then
         echo "pi-dockerized: it is set as setting.default_profile; fix it with 'pi-dockerized --profile default config set default_profile <name>'." >&2
     else
-        echo "pi-dockerized: create it with 'pi-dockerized config profiles create $PI_DOCKERIZED_PROFILE' or 'pi-dockerized --profile $PI_DOCKERIZED_PROFILE install'." >&2
+        echo "pi-dockerized: create it with 'pi-dockerized profile create $PI_DOCKERIZED_PROFILE' or 'pi-dockerized --profile $PI_DOCKERIZED_PROFILE install'." >&2
     fi
     exit 3
 fi
@@ -104,7 +105,7 @@ unset _pi_config_root
 
 # Shared configuration, logging (print_*) and command modules.
 source "$REPO_ROOT/lib/config-lib.sh"
-for _cmd_module in help session extensions image update config; do
+for _cmd_module in help session extensions image update config profile; do
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/cmd/$_cmd_module.sh"
 done
@@ -137,6 +138,9 @@ check_config() {
 # Main script logic
 main() {
     check_not_root
+    # Upgrades from the old layout (default profile in the config root) move
+    # it into profiles/default once, before any command touches its files.
+    migrate_legacy_layout || exit "$E_CONFIG"
 
     local command="${1:-run}"
     shift || true
@@ -232,6 +236,11 @@ main() {
         rollback_image
         ;;
     install)
+        # A new profile is claimed like `profile create` does (no duplicate
+        # names); the wizard then seeds it.
+        if [ -n "$PI_PROFILE" ] && [ ! -d "$(profile_dir "$PI_PROFILE")" ]; then
+            claim_profile_dir "$PI_PROFILE" || exit $?
+        fi
         # shellcheck source=lib/install-lib.sh
         source "$REPO_ROOT/lib/install-lib.sh"
         run_install_main "$@"
@@ -254,6 +263,10 @@ main() {
     config)
         # Local-only command: works without a running Docker daemon.
         show_config "$@"
+        ;;
+    profile)
+        # Local-only, except `profile run` (re-execs into `run`).
+        manage_profile "$@"
         ;;
     clean)
         check_docker

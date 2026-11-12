@@ -100,4 +100,5 @@ CI also builds nothing on the contributor's machine, but the image workflow
 ## Docs
 
 Update `README.md` (and `SECURITY.md` where relevant) for user-visible changes.
-The wrapper config lives at `~/.config/pi-dockerized/config`.
+Each profile's config lives at `~/.config/pi-dockerized/profiles/<name>/config`
+(`default` included); the root `config` only holds profile routing.

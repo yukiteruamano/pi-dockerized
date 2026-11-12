@@ -25,22 +25,61 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   rules accept host allow rules (`pi-policy/*`) and which are built-in
   backstops (`backstop/*`).
 
+### Changed (profile layout — automatic migration)
+
+- **Every profile now lives in `~/.config/pi-dockerized/profiles/<name>/`,
+  `default` included.** The default profile used to share the config root
+  with `profiles/`; its config, secrets file, state tree, relay dir and
+  backups now sit in `profiles/default/` like any other profile, and the root
+  `config` keeps only routing (`setting.default_profile`, `profile.map.*`).
+- **Migration:** the first run of the new wrapper (any command; `update` and
+  `upgrade` trigger it right after pulling) moves the old default profile into
+  `profiles/default`, keeps `default_profile`/`profile.map` in the root config
+  (commented out in the profile's copy), rewrites `setting.env_file` when it
+  pointed at the old location, and keeps your comments, mounts and backups.
+  It is resumable (staged in `profiles/.default.migrating`, renamed into place
+  only when complete), stays on one filesystem so running sessions keep their
+  mounts, and never reads secrets. `profile check default` reports anything
+  left behind in the root. Downgrading to 0.16 after the migration would see
+  an empty default profile: move `profiles/default/*` back to the root first.
+- `config set default_profile NAME` writes the root config from any profile
+  and refuses a profile that does not exist; `profile root [path|edit]` opens
+  the routing config. `uninstall --purge-config` deletes the active profile
+  only; with `--all-profiles` it deletes the whole config root.
+
 ### Added (multi-account profiles)
 
-- `config profiles create NAME` / `remove NAME [--yes]`: profiles are created
-  explicitly, and any other command naming an unknown profile fails (exit 3),
-  so a typo in `--profile` can never silently run a session on a fresh empty
-  profile with default settings. `remove` refuses while the profile has
-  running sessions and asks for confirmation.
-  **Migration:** profiles that already exist keep working as-is — the check is
-  on the profile directory, which every earlier flow (`run`, `install`,
-  `config set`) created; one without a `config` file still warns and runs on
-  defaults, as before (a regression test pins this). Only scripts that relied
-  on `--profile NAME run` auto-creating a profile on first use must now call
-  `pi-dockerized config profiles create NAME` (or `--profile NAME install`)
-  first.
+- `profile` command: every profile operation in one place — `list`,
+  `create NAME`, `remove NAME [--yes]`, `show [NAME] [--sources]`,
+  `path [NAME]`, `check [NAME]`, `fix [NAME]` and `run NAME [RUN ARGS]`
+  (= `--profile NAME run`). Profiles are created explicitly, and any other
+  command naming an unknown profile fails (exit 3), so a typo in `--profile`
+  can never silently run a session on a fresh empty profile with default
+  settings. `remove` refuses while the profile has running sessions and asks
+  for confirmation (a symlinked alias loses only the link).
+- `profile check NAME` audits the whole profile: directory (real, owned,
+  private, not an alias of another), config file (present, `0600`, valid
+  entries, no root-only routing lines), secrets file (inside the profile, no
+  sandbox-controlling keys), state tree, and for `default` the routing to
+  missing profiles. `profile fix NAME` repairs structure and permissions,
+  comments out root-only lines after a backup, points `env_file` at the
+  profile's own `env` when it borrowed another one, then checks again. Secrets
+  are never read or copied.
+- No duplicate profiles: names that differ only by case or `-`/`_` are
+  refused (also for `--profile NAME install`), creation is an atomic `mkdir`,
+  and `profile list` flags look-alikes and stray entries.
+- Separate secrets per profile: a profile's config template names its own
+  `env` file, and every profile (`default` included) refuses an `env_file`
+  outside its own directory.
+- **Named profiles that already exist keep working as-is** — the existence
+  check is on the profile directory, which every earlier flow (`run`,
+  `install`, `config set`) created; one without a `config` file still warns
+  and runs on defaults, as before (a regression test pins this). Only scripts
+  that relied on `--profile NAME run` auto-creating a profile on first use
+  must now call `pi-dockerized profile create NAME` (or `--profile NAME
+  install`) first.
 - `setting.default_profile` (root config only): the profile used when
-  `--profile` is not given; `--profile default` names the root profile and
+  `--profile` is not given; `--profile default` names the default profile and
   escapes it.
 - `profile.map.<key>=<path>:<profile>` (root config only): sessions started in
   a mapped directory re-exec under that profile (longest path wins, explicit
@@ -48,9 +87,15 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
   profile). Host-side only by design: a file inside a repository must never
   choose which account/keys it gets.
 - Sessions carry a `pi-dockerized.profile` label; `ps` (and `ps --json`) show
-  the profile column. Shell/zsh completions cover the new keys and
-  subcommands: `--profile` offers the existing names plus `default`, and
-  `config profiles` completes `list|create|remove` (remove with names).
+  the profile column.
+- Shell completions (bash and zsh) rewritten to cover the whole CLI: every
+  command and its flags, `config` subcommands with per-setting values
+  (`config set network <TAB>` → `host bridge`, booleans, policies, profile
+  names, files for `env_file`), `profile` subcommands with profile names,
+  `install --only` comma lists, `--pi-version latest`, and the session flags
+  after `profile run NAME`. The command is found even after
+  `--profile NAME`. A contract test keeps both files in sync with the help
+  text and `SETTING_KEYS`.
 - Fixed the zsh completion for `run`/`shell`/`exec`/`models`: a missing line
   continuation made zsh execute `'--timeout[...]'` as a command, breaking
   completion with an error instead of offering the session flags. Reload the

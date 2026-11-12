@@ -91,7 +91,7 @@ init_config_file() {
 # setting.pids_limit=4096
 
 # Secrets file (dotenv KEY=VALUE lines) loaded with docker --env-file.
-# Must live under ~/.config/pi-dockerized/ (never mounted). Create it with
+# Must live in this profile's config directory (never mounted). Create it with
 # `install -m 600 /dev/null ~/.config/pi-dockerized/env` and add provider keys
 # like ANTHROPIC_API_KEY=... Empty = disabled.
 # setting.env_file=~/.config/pi-dockerized/env
@@ -102,16 +102,8 @@ init_config_file() {
 # Startup model selection (passed as `pi --model`). Empty = Pi default.
 # setting.model=sonnet
 
-# Profile used when --profile is not given. Read from the ROOT config only
-# (~/.config/pi-dockerized/config); ignored inside a profile. Escape back to
-# the root profile with `--profile default`.
-# setting.default_profile=
-
-# Per-project profile mapping (ROOT config only): sessions started in <path>
-# (or below) use <profile>; the longest matching path wins and an explicit
-# --profile always takes precedence. The key after `profile.map.` is a free
-# label, like mount names.
-#   profile.map.work=~/work:acme
+# Profile routing (default_profile, profile.map.*) lives in the root config:
+# `pi-dockerized profile root edit`.
 
 # Custom volume mounts (read-only by default)
 # Format: mount.<name>=<host_path>:<container_path>[:rw]
@@ -126,6 +118,13 @@ init_config_file() {
 # Secrets live in setting.env_file (dotenv KEY=VALUE, never mounted).
 # Use `pi-dockerized install` to add keys without ever printing them.
 EOF
+    # The secrets-file hints name this profile's own file: a profile must never
+    # be pointed at the root's (or another profile's) keys.
+    local env_hint="$CONFIG_DIR/env" content
+    # shellcheck disable=SC2088 # a display path: the tilde is meant literally
+    [[ "$env_hint" == "$HOME"/* ]] && env_hint="~${env_hint#"$HOME"}"
+    content=$(<"$CONFIG_FILE")
+    printf '%s\n' "${content//\~\/.config\/pi-dockerized\/env/"$env_hint"}" >"$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE" 2>/dev/null || true
     config_success "Created config file at $CONFIG_FILE"
 }
@@ -277,14 +276,10 @@ load_config() {
             # setting.env_file (see migrate_legacy_env_vars).
             [ -n "$value" ] && config_warning "Ignoring legacy '${key#env.}' (env.* passthrough was removed); move the value to setting.env_file instead."
             ;;
-        profile.map.*)
-            # Project→profile mapping: consumed by bin/pi-dockerized before
-            # this library loads (profile_for_dir, root config only). Accepted
-            # here so the loader does not flag it, with a format check.
-            case "$value" in
-            *:*) ;;
-            *) [ -n "$value" ] && config_warning "config line $lineno: profile.map needs <path>:<profile> (ignored)" ;;
-            esac
+        profile.map.* | setting.default_profile)
+            # Routing entries belong to the root config (read by
+            # bin/pi-dockerized and profile_for_dir); a profile ignores them
+            # and `profile check` reports them.
             ;;
         setting.*)
             _apply_setting "${key#setting.}" "$value"
@@ -300,6 +295,7 @@ load_config() {
             ;;
         esac
     done <"$CONFIG_FILE"
+    DEFAULT_PROFILE=$(root_default_profile)
 
     return 0
 }
@@ -417,6 +413,8 @@ save_config() {
 
     local key
     for key in "${SETTING_KEYS[@]}"; do
+        # Routing lives in the root config (config_set_value writes it there).
+        [ "$key" = default_profile ] && continue
         config_upsert "setting.$key" "$(_get_setting "$key")"
     done
     _config_rewrite_mounts
@@ -438,6 +436,10 @@ _setting_key() {
 setting_source() {
     local key k
     key=$(_setting_key "$1") || return 1
+    if [ "$key" = default_profile ]; then
+        if [ -n "$DEFAULT_PROFILE" ]; then echo "root config"; else echo "default"; fi
+        return 0
+    fi
     for k in "${SETTINGS_FROM_FILE[@]}"; do
         [ "$k" = "$key" ] && {
             echo "config file"
@@ -496,6 +498,10 @@ config_set_value() {
         return 1
         ;;
     esac
+    if [ "$key" = default_profile ]; then
+        _set_root_default_profile "$value"
+        return
+    fi
     mkdir -p "$CONFIG_DIR"
     config_exists || init_config_file >/dev/null
     config_upsert "setting.$key" "$value"

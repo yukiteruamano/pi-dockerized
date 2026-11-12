@@ -93,10 +93,10 @@ pi-dockerized build
 pi-dockerized pull
 
 # Add provider keys to the secrets file:
-install -m 600 /dev/null ~/.config/pi-dockerized/env
-printf 'ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' >> ~/.config/pi-dockerized/env
+install -m 600 /dev/null ~/.config/pi-dockerized/profiles/default/env
+printf 'ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' >> ~/.config/pi-dockerized/profiles/default/env
 # then point the wrapper at it:
-pi-dockerized config edit   # set: setting.env_file=~/.config/pi-dockerized/env
+pi-dockerized config edit   # set: setting.env_file=~/.config/pi-dockerized/profiles/default/env
 
 # Check credentials and run
 pi-dockerized auth
@@ -151,15 +151,39 @@ project session prints an `Exposure:` line summarizing what it can reach.
 `pi-dockerized --profile work run` (or `PI_DOCKERIZED_PROFILE=work`) uses
 `~/.config/pi-dockerized/profiles/work/` for its own config, secrets file, MCP
 servers, sessions and audit log, so keys and policies never mix between
-contexts (one profile per provider account). Profiles are created explicitly —
-`config profiles create work` (or `--profile work install`) — and any other
-command naming an unknown profile fails, so a typo can never start a session on
-a fresh empty profile. `config profiles` lists them; `config profiles remove
-work --yes` deletes one, state included. `ps` shows each session's profile.
+contexts (one profile per provider account). Nothing is inherited from the
+root config: each profile's config fully replaces it, and its secrets file
+must live inside the profile's own directory. Everything profile-related goes
+through the `profile` command:
 
-Two root-config (never per-profile) entries route sessions automatically:
+| Command | What it does |
+|---------|--------------|
+| `profile list` | Names, the active one marked; look-alikes and stray entries reported |
+| `profile create work` | New profile with its own config and state tree (or `--profile work install`) |
+| `profile remove work [--yes]` | Delete it, state included (refused while it has running sessions) |
+| `profile show [work] [--sources]` / `profile path [work]` | Its settings / its directory |
+| `profile check [work]` | Read-only audit of the whole profile (see below) |
+| `profile fix [work]` | Repair what `check` reports, then check again |
+| `profile run work [RUN ARGS]` | Same as `--profile work run [RUN ARGS]` |
+
+Any other command naming an unknown profile fails, so a typo can never start a
+session on a fresh empty profile. Names are unique: `work_a` is refused when
+`work-a` exists (case and `-`/`_` variants read as the same name), and a
+profile directory symlinked to another is reported as a duplicate. `check`
+covers the directory (real, owned, `0700`, no alias), the config file (present,
+`0600`, valid entries, no root-only `default_profile`/`profile.map` lines), the
+secrets file (inside the profile, no sandbox-controlling keys), the state tree
+and, for `default`, routing to missing profiles. `fix` only repairs structure
+and permissions — it comments out root-only lines (after a backup), points
+`env_file` at the profile's own `env` when it borrowed another profile's, and
+reseeds missing state; it never reads or copies secrets. `ps` shows each
+session's profile.
+
+Two root-config (never per-profile) entries route sessions automatically;
+edit them with `profile root edit` (`config set default_profile NAME` also
+writes the root config, from any profile):
 `setting.default_profile=work` makes `work` the profile when `--profile` is not
-given (`--profile default` escapes back to the root profile), and
+given (`--profile default` escapes back to the default profile), and
 `profile.map.<key>=<path>:<profile>` picks a profile by project directory
 (longest matching path wins; an explicit `--profile` always takes precedence):
 
@@ -209,7 +233,7 @@ Sources are exactly what `pi install` takes: `npm:`, `git:` and `https://` git
 URLs. Local paths are refused (the installer cannot see your disk).
 
 How it works: the commands above run the real `pi` in a throwaway container whose
-agent directory is a host directory, `~/.config/pi-dockerized/home/.pi/ext-agent/`
+agent directory is a host directory, `~/.config/pi-dockerized/profiles/default/home/.pi/ext-agent/`
 (`pi-dockerized extensions path`), mounted read-write. Pi writes its
 `settings.json` there and installs into `npm/` and `git/`, visible from the host.
 Sessions mount those three **read-only** over the agent's own, so the agent can
@@ -239,7 +263,7 @@ into the image (`extensions/pi-security-guard/`), where a session cannot touch i
 ## MCP support
 
 MCP servers live in **`mcp.json`** on the host
-(`~/.config/pi-dockerized/home/.pi/agent/mcp.json`) and are mounted read-only.
+(`~/.config/pi-dockerized/profiles/default/home/.pi/agent/mcp.json`) and are mounted read-only.
 Edit them with:
 
 ```bash
@@ -267,7 +291,7 @@ secrets. For OAuth servers, `pi-dockerized mcp login <server>` writes tokens to
 ## Skills (host-managed, read-only)
 
 Skills live under
-`~/.config/pi-dockerized/home/.pi/agent/skills/<name>/SKILL.md` and are mounted
+`~/.config/pi-dockerized/profiles/default/home/.pi/agent/skills/<name>/SKILL.md` and are mounted
 **read-only**: create and edit them on the host, never from a session. Pi picks
 them up on next start (`/reload` inside a session). Project resources
 (`.pi/` extensions, skills, prompts, MCP servers) load only after you trust the
@@ -277,8 +301,10 @@ and skips them in `exec`/print mode. Trust granted with `/trust` is stored in
 
 ## Configuration
 
-Wrapper config: `~/.config/pi-dockerized/config` (INI). Secrets: the dotenv file
-referenced by `setting.env_file` (mode 600, under the config dir, never mounted).
+Wrapper config: `~/.config/pi-dockerized/profiles/<name>/config` (INI; `default`
+unless another profile is selected). Secrets: the dotenv file referenced by
+`setting.env_file` (mode 600, inside the profile's directory, never mounted).
+The root `~/.config/pi-dockerized/config` only routes commands to a profile.
 
 ```ini
 setting.ssh_agent_support=false
@@ -291,7 +317,7 @@ setting.verify_updates=false
 setting.memory=4g
 setting.cpus=2
 setting.pids_limit=4096
-setting.env_file=~/.config/pi-dockerized/env
+setting.env_file=~/.config/pi-dockerized/profiles/default/env
 setting.theme=system
 setting.model=sonnet
 setting.default_profile=
@@ -312,6 +338,9 @@ would hide system paths or sit inside the baked agent directory. A source that
 does not exist is skipped with a warning.
 
 ## Volume Mounts
+
+Host paths are relative to the profile's directory
+(`~/.config/pi-dockerized/profiles/<name>/`).
 
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
@@ -341,7 +370,7 @@ else from the table is shared with the session.
 
 Not mounted (baked read-only in the image): `AGENTS.md`, `extensions/`.
 
-The whole host state tree lives under `~/.config/pi-dockerized/home/` (override
+The whole host state tree lives under `~/.config/pi-dockerized/profiles/default/home/` (override
 with `PI_HOME`) and survives rebuilds.
 
 ## Security policy

@@ -684,7 +684,7 @@ bin audit -n x >/dev/null 2>&1 && fail "audit -n needs a number"
 bin audit --clear >/dev/null 2>&1 || fail "audit --clear"
 [ ! -s "$AGENT/audit.log" ] || fail "audit --clear must empty the log"
 
-# --- config command (profiles, get/set) -----------------------------------------------------------------
+# --- profile and config commands -----------------------------------------------------------------
 # Migration: profiles created implicitly by older versions (directory present,
 # config file sometimes missing) must keep working — the existence check is on
 # the directory, which every old flow created. Only truly unknown names fail.
@@ -699,27 +699,27 @@ rm -r "$TMP/root/profiles/legacy"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config path 2>&1)" &&
     fail "an unknown profile must be refused"
 assert_contains "$out" "does not exist" "the unknown-profile error names the problem"
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create work >/dev/null 2>&1 ||
-    fail "config profiles create"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile create work >/dev/null 2>&1 ||
+    fail "profile create"
 [ -f "$TMP/root/profiles/work/config" ] || fail "profiles create must seed the profile's config file"
 [ -d "$TMP/root/profiles/work/home/.pi/agent" ] || fail "profiles create must seed the profile's state tree"
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create work >/dev/null 2>&1 &&
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile create work >/dev/null 2>&1 &&
     fail "creating an existing profile must fail"
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create default >/dev/null 2>&1 &&
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile create default >/dev/null 2>&1 &&
     fail "the reserved profile name 'default' must be refused"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config path 2>&1)"
 assert_eq "$out" "$TMP/root/profiles/work/config" "--profile selects its own config directory"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path 2>&1)"
-assert_eq "$out" "$TMP/root/config" "the default profile lives in the root"
+assert_eq "$out" "$TMP/root/profiles/default/config" "the default profile lives in profiles/ like any other"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile default config path 2>&1)"
-assert_eq "$out" "$TMP/root/config" "--profile default names the root profile"
+assert_eq "$out" "$TMP/root/profiles/default/config" "--profile default names the default profile"
 env -u CONFIG_DIR -u PI_HOME "$BIN" --profile 'Bad Name' config path >/dev/null 2>&1 && fail "invalid profile names must be rejected"
 env -u CONFIG_DIR -u PI_HOME "$BIN" --profile '../evil' config path >/dev/null 2>&1 && fail "path traversal in a profile name must be rejected"
 env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config set network bridge >/dev/null 2>&1 || fail "config set in a profile"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile work config get network 2>&1)"
 assert_eq "$out" "bridge" "profile settings are stored separately"
-out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles 2>&1)"
-assert_contains "$out" "work" "config profiles lists the existing profiles"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile list 2>&1)"
+assert_contains "$out" "work" "profile list shows the existing profiles"
 
 # setting.default_profile (root config) picks the profile when --profile is
 # not given; a broken value is an error, --profile default escapes it.
@@ -727,22 +727,153 @@ printf 'setting.default_profile=work\n' >>"$TMP/root/config"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path 2>&1)"
 assert_eq "$out" "$TMP/root/profiles/work/config" "setting.default_profile selects the profile"
 out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" --profile default config path 2>&1)"
-assert_eq "$out" "$TMP/root/config" "--profile default escapes setting.default_profile"
+assert_eq "$out" "$TMP/root/profiles/default/config" "--profile default escapes setting.default_profile"
 sed -i 's/^setting\.default_profile=work$/setting.default_profile=nope/' "$TMP/root/config"
 env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config path >/dev/null 2>&1 &&
     fail "a default_profile pointing at a missing profile must be an error"
 sed -i '/^setting\.default_profile=/d' "$TMP/root/config"
 
 # profiles remove deletes the whole tree (confirmation required unless --yes).
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles create scratch >/dev/null 2>&1 ||
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile create scratch >/dev/null 2>&1 ||
     fail "profiles create scratch"
-out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove scratch </dev/null 2>&1)"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile remove scratch </dev/null 2>&1)"
 [ -d "$TMP/root/profiles/scratch" ] || fail "profiles remove without confirmation must not delete"
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove scratch --yes >/dev/null 2>&1 ||
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile remove scratch --yes >/dev/null 2>&1 ||
     fail "profiles remove --yes"
 [ ! -d "$TMP/root/profiles/scratch" ] || fail "profiles remove --yes must delete the profile tree"
-env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" config profiles remove default --yes >/dev/null 2>&1 &&
-    fail "the root profile must not be removable"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" profile remove default --yes >/dev/null 2>&1 &&
+    fail "the default profile must not be removable"
+
+# Profile names are unique: case or -/_ variants of an existing name are
+# refused, by `profile create` and by an implicit `--profile NAME install`.
+pr() { env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$TMP/root" "$BIN" "$@"; }
+pr profile create work_a >/dev/null 2>&1 || fail "profile create work_a"
+out="$(pr profile create work-a 2>&1)" && fail "a -/_ variant of an existing profile must be refused"
+assert_contains "$out" "duplicate" "the duplicate-name error names the problem"
+pr --profile work-a install --yes --only config >/dev/null 2>&1 && fail "install must not create a duplicate profile"
+[ ! -e "$TMP/root/profiles/work-a" ] || fail "a refused duplicate must leave no directory behind"
+mkdir "$TMP/root/profiles/Work" # made by hand, outside the wrapper
+out="$(pr profile list 2>&1)"
+assert_contains "$out" "not a valid profile name" "list reports entries the wrapper cannot use"
+assert_contains "$out" "work (duplicate" "list flags a profile that has a look-alike"
+rmdir "$TMP/root/profiles/Work"
+
+# A symlinked profile is the same tree under two names: check reports it,
+# fix refuses to write through it and remove drops only the link.
+ln -s work "$TMP/root/profiles/alias"
+out="$(pr profile check work 2>&1)" && fail "check must fail on an aliased profile"
+assert_contains "$out" "same directory" "check names the alias"
+out="$(pr profile fix alias 2>&1)"
+assert_contains "$out" "Not repairing" "fix must not write through a symlinked profile"
+pr profile remove alias --yes >/dev/null 2>&1 || fail "profile remove of an alias"
+[ -d "$TMP/root/profiles/work" ] || fail "removing an alias must keep the real profile"
+pr profile remove work_a --yes >/dev/null 2>&1 || fail "profile remove work_a"
+
+# check/fix audit and repair the whole profile: config file, root-only
+# entries, borrowed secrets, permissions and the state tree.
+WORK="$TMP/root/profiles/work"
+assert_contains "$(cat "$WORK/config")" "profiles/work/env" "a profile's config template points at its own secrets file"
+out="$(pr profile check work 2>&1)" || fail "a fresh profile must pass check (got: $out)"
+printf 'setting.default_profile=work\nprofile.map.x=~/x:work\nsetting.env_file=%s/env\n' "$TMP/root" >>"$WORK/config"
+chmod 644 "$WORK/config"
+rm "$WORK/home/.pi/agent/mcp.json" "$WORK/home/.pi/agent/auth.json"
+out="$(pr profile check work 2>&1)" && fail "check must fail on a damaged profile"
+assert_contains "$out" "root-only" "check reports root-only entries in a profile"
+assert_contains "$out" "outside this profile" "check reports secrets borrowed from another profile"
+assert_contains "$out" "mcp.json missing" "check reports a missing state file"
+[ ! -e "$WORK/home/.pi/agent/mcp.json" ] || fail "check must not write"
+(umask 077 && : >"$WORK/env")
+out="$(pr profile fix work 2>&1)" || fail "fix must leave a healthy profile (got: $out)"
+assert_contains "$out" "is healthy" "fix ends with a passing check"
+[ -f "$WORK/home/.pi/agent/mcp.json" ] && [ -s "$WORK/home/.pi/agent/auth.json" ] || fail "fix reseeds the state tree"
+assert_eq "$(stat -c '%a' "$WORK/config")" "600" "fix restores the config file permissions"
+assert_contains "$(cat "$WORK/config")" "# (root config only, ignored in a profile) setting.default_profile=work" "fix comments out root-only entries"
+assert_contains "$(cat "$WORK/config")" "setting.env_file=$WORK/env" "fix points env_file at the profile's own secrets file"
+ls "$WORK"/config.bak.* >/dev/null 2>&1 || fail "fix backs up the config before editing it"
+
+# The default profile's check also covers the root config's routing, and
+# `profile` keeps working while default_profile dangles.
+printf 'setting.default_profile=gone\n' >>"$TMP/root/config"
+out="$(pr profile check default 2>&1)" && fail "check default must fail on a dangling default_profile"
+assert_contains "$out" "default_profile=gone" "check default names the dangling default_profile"
+sed -i '/^setting\.default_profile=gone$/d' "$TMP/root/config"
+
+# show/path/run act on the named profile; config profiles points at profile.
+assert_eq "$(pr profile path work)" "$WORK" "profile path prints the profile directory"
+assert_eq "$(pr --profile work profile path)" "$WORK" "profile path defaults to the active profile"
+assert_contains "$(pr profile show work 2>&1)" "Network:            bridge" "profile show prints that profile's settings"
+pr profile show nope >/dev/null 2>&1 && fail "profile show must refuse a missing profile"
+out="$(DRY_RUN=true PATH="$FAKE_BIN:$PATH" pr profile run work "$PROJECT" 2>&1)" || fail "profile run dry-run (got: $out)"
+assert_contains "$out" "pi-dockerized.profile=work" "profile run starts the session under that profile"
+out="$(pr config profiles 2>&1)" && fail "config profiles moved to the profile command"
+assert_contains "$out" "profile list" "config profiles points at the profile command"
+
+# The default profile must not take a named profile's secrets file.
+pr --profile default config set env_file "$WORK/env" >/dev/null 2>&1 || fail "config set env_file in the default profile"
+out="$(DRY_RUN=true PATH="$FAKE_BIN:$PATH" pr run "$PROJECT" 2>&1)" && fail "the default profile must refuse a named profile's secrets file"
+assert_contains "$out" "another profile" "the refusal explains the secrets mix-up"
+pr --profile default config set env_file "" >/dev/null 2>&1
+
+# default_profile is routing: `config set` writes it to the root config from
+# any profile, and refuses a profile that does not exist.
+pr --profile work config set default_profile work >/dev/null 2>&1 || fail "config set default_profile"
+assert_contains "$(cat "$TMP/root/config")" "setting.default_profile=work" "default_profile is written to the root config"
+assert_not_contains "$(cat "$WORK/config")" $'\nsetting.default_profile=work' "default_profile never lands in a profile's config"
+assert_eq "$(pr --profile default config get default_profile)" "work" "config get default_profile reads the root config"
+pr config set default_profile nope >/dev/null 2>&1 && fail "default_profile must name an existing profile"
+pr config set default_profile "" >/dev/null 2>&1 || fail "clearing default_profile"
+assert_eq "$(pr profile root path)" "$TMP/root/config" "profile root path prints the routing config"
+
+# --- Migration from the old layout (default profile in the config root) ---------------------
+# Up to 0.16 the default profile's config, secrets file and state lived in
+# the root itself. The first run of the new wrapper moves them into
+# profiles/default, keeps routing in the root config and follows env_file.
+LEGACY="$HOME/legacy-cfg"
+mkdir -p "$LEGACY/home/.pi/agent/sessions" "$LEGACY/profiles/work"
+: >"$LEGACY/profiles/work/config"
+printf '# my comment\nsetting.network=bridge\nsetting.env_file=~/legacy-cfg/env\nsetting.default_profile=work\nprofile.map.w=~/w:work\nmount.x=/opt/x:/opt/x\n' >"$LEGACY/config"
+(umask 077 && printf 'ANTHROPIC_API_KEY=x\n' >"$LEGACY/env")
+: >"$LEGACY/home/.pi/agent/sessions/s1.jsonl"
+: >"$LEGACY/config.bak.20250101000000"
+lg() { env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$LEGACY" "$BIN" "$@"; }
+out="$(lg --profile default config path 2>/dev/null)" || fail "the first run after an upgrade must migrate and continue"
+assert_eq "$out" "$LEGACY/profiles/default/config" "migration output stays off stdout"
+D="$LEGACY/profiles/default"
+[ -f "$D/env" ] && [ -f "$D/home/.pi/agent/sessions/s1.jsonl" ] && [ -f "$D/config.bak.20250101000000" ] ||
+    fail "migration moves the secrets file, the state tree and the backups"
+[ ! -e "$LEGACY/env" ] && [ ! -e "$LEGACY/home" ] || fail "migration leaves nothing of the old profile in the root"
+[ ! -e "$LEGACY/profiles/.default.migrating" ] || fail "migration removes its staging directory"
+assert_eq "$(stat -c '%a' "$D/env")" "600" "migration keeps the secrets file private"
+root_cfg="$(cat "$LEGACY/config")"
+assert_contains "$root_cfg" "setting.default_profile=work" "the root config keeps default_profile"
+assert_contains "$root_cfg" "profile.map.w=~/w:work" "the root config keeps profile.map"
+assert_not_contains "$root_cfg" "setting.network" "profile settings leave the root config"
+def_cfg="$(cat "$D/config")"
+assert_contains "$def_cfg" "# my comment" "the default profile's config keeps the user's comments"
+assert_contains "$def_cfg" $'\nsetting.network=bridge' "the default profile keeps its settings"
+assert_contains "$def_cfg" "mount.x=/opt/x:/opt/x" "the default profile keeps its mounts"
+assert_contains "$def_cfg" "setting.env_file=~/legacy-cfg/profiles/default/env" "env_file follows the moved secrets file"
+assert_contains "$def_cfg" "# (root config only, ignored in a profile) setting.default_profile=work" "routing lines are commented out in the profile"
+assert_eq "$(lg config path 2>/dev/null)" "$LEGACY/profiles/work/config" "default_profile still routes after the migration"
+out="$(lg --profile default config path 2>&1)"
+assert_not_contains "$out" "Moving" "the migration runs once"
+out="$(lg profile fix default 2>&1)" || fail "fix must make a migrated default profile healthy (got: $out)"
+assert_contains "$out" "root config ok" "the migrated root config passes its check"
+# An interrupted migration (some entries already staged) resumes.
+LEGACY2="$HOME/legacy-cfg2"
+mkdir -p "$LEGACY2/profiles/.default.migrating/home" "$LEGACY2/gnupg-relay"
+printf 'setting.network=bridge\n' >"$LEGACY2/config"
+out="$(env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$LEGACY2" "$BIN" --profile default config get network 2>/dev/null)" ||
+    fail "an interrupted migration must resume"
+assert_eq "$out" "bridge" "the resumed migration keeps the settings"
+[ -d "$LEGACY2/profiles/default/home" ] && [ -d "$LEGACY2/profiles/default/gnupg-relay" ] ||
+    fail "the resumed migration gathers staged and remaining entries"
+# A root config with only routing (or nothing at all) is the new layout.
+NEWROOT="$HOME/new-cfg"
+mkdir -p "$NEWROOT"
+printf 'setting.default_profile=\n' >"$NEWROOT/config"
+env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$NEWROOT" "$BIN" config path >/dev/null 2>&1
+assert_eq "$(cat "$NEWROOT/config")" "setting.default_profile=" "a routing-only root config is left alone"
 bin config set network lan >/dev/null 2>&1 && fail "bin config set must reject invalid values"
 bin config get nosuchkey >/dev/null 2>&1 && fail "bin config get must reject unknown keys"
 out="$(bin config allow path 2>&1)"
@@ -781,15 +912,16 @@ mkdir -p "$HOME/.config/other-app"
 CONFIG_DIR="$HOME/.config" bin uninstall --purge-config --yes >/dev/null 2>&1
 CONFIG_DIR="$HOME/.config/other-app" bin uninstall --purge-config --yes >/dev/null 2>&1
 [ -d "$HOME/.config/other-app" ] || fail "--purge-config must refuse ~/.config and non pi-dockerized dirs"
-# The default profile's purge keeps the named profiles unless --all-profiles.
+# --purge-config deletes the active profile only; --all-profiles the root.
 PURGE_DIR="$HOME/.config/purge-test/pi-dockerized"
-mkdir -p "$PURGE_DIR/profiles/work"
+mkdir -p "$PURGE_DIR/profiles/work" "$PURGE_DIR/profiles/default"
 : >"$PURGE_DIR/config"
-CONFIG_DIR="$PURGE_DIR" bin uninstall --purge-config --yes >/dev/null 2>&1 || fail "purge with profiles"
-[ -d "$PURGE_DIR/profiles/work" ] || fail "--purge-config must keep named profiles"
-[ ! -e "$PURGE_DIR/config" ] || fail "--purge-config must delete the default profile's files"
-CONFIG_DIR="$PURGE_DIR" bin uninstall --purge-config --all-profiles --yes >/dev/null 2>&1 || fail "purge --all-profiles"
-[ ! -d "$PURGE_DIR" ] || fail "--all-profiles must delete the named profiles too"
+purge() { env -u CONFIG_DIR -u PI_HOME PI_CONFIG_ROOT="$PURGE_DIR" PATH="$FAKE_BIN:$PATH" "$BIN" uninstall --purge-config "$@"; }
+purge --yes >/dev/null 2>&1 || fail "purge with profiles"
+[ ! -e "$PURGE_DIR/profiles/default" ] || fail "--purge-config must delete the default profile"
+[ -d "$PURGE_DIR/profiles/work" ] && [ -f "$PURGE_DIR/config" ] || fail "--purge-config must keep other profiles and the routing config"
+purge --all-profiles --yes >/dev/null 2>&1 || fail "purge --all-profiles"
+[ ! -d "$PURGE_DIR" ] || fail "--all-profiles must delete every profile"
 bin uninstall --all-profiles >/dev/null 2>&1 && fail "--all-profiles needs --purge-config"
 
 echo "All wrapper-commands tests passed."

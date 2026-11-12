@@ -61,13 +61,14 @@ remove_managed_rc_lines() {
     return 0
 }
 
-# True when CONFIG_DIR is somewhere it is safe to delete recursively: an
-# existing, real (not symlinked) directory inside $HOME that is a pi-dockerized
-# config root or one profile in it. Never $HOME, ~/.config or another app's dir.
+# True when DIR is somewhere it is safe to delete recursively: an existing,
+# real (not symlinked) directory inside $HOME that is a pi-dockerized config
+# root or one profile in it. Never $HOME, ~/.config or another app's dir.
+# Usage: _config_dir_deletable <dir>
 _config_dir_deletable() {
-    local real home_real
-    [ -n "$CONFIG_DIR" ] && [ -d "$CONFIG_DIR" ] && [ ! -L "$CONFIG_DIR" ] || return 1
-    real=$(canonical_path "$CONFIG_DIR")
+    local dir="$1" real home_real
+    [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    real=$(canonical_path "$dir")
     home_real=$(canonical_path "$HOME")
     [[ "$real" == "$home_real"/* ]] || return 1
     case "$real" in
@@ -77,23 +78,11 @@ _config_dir_deletable() {
     return 1
 }
 
-# Delete the config dir. The default profile's dir is also the root of the
-# named profiles (profiles/): those are kept unless `all_profiles` is true.
-# Usage: _purge_config_dir <all_profiles>
-_purge_config_dir() {
-    local all_profiles="$1" entry
-    if [ "$all_profiles" != true ] && [ -d "$CONFIG_DIR/profiles" ] &&
-        [ -n "$(ls -A "$CONFIG_DIR/profiles" 2>/dev/null)" ]; then
-        for entry in "$CONFIG_DIR"/* "$CONFIG_DIR"/.[!.]*; do
-            [ -e "$entry" ] || [ -L "$entry" ] || continue
-            [ "$entry" = "$CONFIG_DIR/profiles" ] && continue
-            rm -rf -- "$entry"
-        done
-        config_success "Deleted the default profile in $CONFIG_DIR (named profiles kept; add --all-profiles to delete them)"
-        return 0
-    fi
-    rm -rf -- "$CONFIG_DIR"
-    config_success "Deleted $CONFIG_DIR"
+# What --purge-config deletes: the active profile's directory, or with
+# --all-profiles the whole config root (every profile and the routing config).
+# Usage: dir=$(_purge_target <all_profiles>)
+_purge_target() {
+    if [ "$1" = true ]; then printf '%s' "$PI_CONFIG_ROOT"; else printf '%s' "$CONFIG_DIR"; fi
 }
 
 # Usage: run_uninstall [--yes] [--image] [--purge-config [--all-profiles]]
@@ -109,8 +98,8 @@ run_uninstall() {
             echo "Usage: pi-dockerized uninstall [--yes] [--image] [--purge-config [--all-profiles]]"
             echo "  (default)        remove the PATH, alias and completion lines from ~/.bashrc and ~/.zshrc"
             echo "  --image          also remove the Docker image (every tag)"
-            echo "  --purge-config   also delete $CONFIG_DIR (config, secrets file, sessions)"
-            echo "  --all-profiles   with --purge-config: also delete the named profiles under it"
+            echo "  --purge-config   also delete $CONFIG_DIR (this profile's config, secrets file, sessions)"
+            echo "  --all-profiles   with --purge-config: delete $PI_CONFIG_ROOT instead (every profile)"
             return 0
             ;;
         *)
@@ -151,17 +140,20 @@ run_uninstall() {
     fi
 
     if [ "$purge" = true ]; then
-        if ! _config_dir_deletable; then
-            config_warning "Not deleting '$CONFIG_DIR': it must be a pi-dockerized config directory inside your home."
+        local target
+        target=$(_purge_target "$all_profiles")
+        if ! _config_dir_deletable "$target"; then
+            config_warning "Not deleting '$target': it must be a pi-dockerized config directory inside your home."
         else
             local ans=y
             if [ "$yes" != true ]; then
-                read -r -p "Delete $CONFIG_DIR, including your secrets file and sessions? (y/N): " ans || ans=""
+                read -r -p "Delete $target, including its secrets files and sessions? (y/N): " ans || ans=""
             fi
             if [[ "$ans" =~ ^[Yy]$ ]]; then
-                _purge_config_dir "$all_profiles"
+                rm -rf -- "$target"
+                config_success "Deleted $target"
             else
-                config_info "Kept $CONFIG_DIR"
+                config_info "Kept $target"
             fi
         fi
     else

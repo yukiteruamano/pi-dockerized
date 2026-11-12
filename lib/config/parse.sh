@@ -242,6 +242,23 @@ env_key_forbidden() {
     return 1
 }
 
+# Expand a leading ~, then canonicalize so `..` segments cannot escape the
+# containment check (readlink -m needs no existing file; canonical_path falls
+# back to the literal path where it is unavailable, e.g. macOS).
+# Usage: env_file=$(resolve_env_file "$ENV_FILE")
+resolve_env_file() {
+    canonical_path "$(expand_tilde "$1")"
+}
+
+# True when a resolved secrets file belongs to the active profile: inside its
+# CONFIG_DIR (either spelling: a symlinked home resolves the env file but not
+# $CONFIG_DIR). Profiles are sibling directories, so the keys of one account
+# never reach another account's sessions.
+# Usage: env_file_in_profile <resolved_path>
+env_file_in_profile() {
+    path_within "$1" "$CONFIG_DIR" || path_within "$1" "$(canonical_path "$CONFIG_DIR")"
+}
+
 # Build the docker --env-file argument from setting.env_file.
 # The file holds secrets (dotenv KEY=VALUE lines) and is consumed host-side by
 # `docker run --env-file`, so values never appear on the wrapper command line.
@@ -254,27 +271,12 @@ build_env_file_args() {
 
     [ -n "$ENV_FILE" ] || return 0
 
-    # Expand a leading ~, then canonicalize so `..` segments cannot escape the
-    # containment check below (readlink -m needs no existing file; fall back to
-    # the literal path where it is unavailable, e.g. macOS).
     local env_file
-    env_file=$(expand_tilde "$ENV_FILE")
-    local canonical
-    if canonical=$(readlink -m "$env_file" 2>/dev/null) && [ -n "$canonical" ]; then
-        env_file="$canonical"
-    fi
-
-    # Compare with both spellings of the config dir (a symlinked home resolves
-    # the env file but not $CONFIG_DIR).
-    local config_real
-    config_real=$(canonical_path "$CONFIG_DIR")
-    case "$env_file" in
-    "$CONFIG_DIR" | "$CONFIG_DIR"/* | "$config_real"/*) ;;
-    *)
-        config_error "Refusing env file outside \$CONFIG_DIR ($CONFIG_DIR): it could be mounted into the container."
+    env_file=$(resolve_env_file "$ENV_FILE")
+    if ! env_file_in_profile "$env_file"; then
+        config_error "Refusing env file outside this profile's directory ($CONFIG_DIR): it could be mounted into the container or belong to another profile."
         exit 1
-        ;;
-    esac
+    fi
 
     if [ ! -f "$env_file" ]; then
         config_error "env file not found: $env_file"

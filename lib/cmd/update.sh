@@ -235,9 +235,10 @@ full_upgrade() {
     if [ "$pull_rc" -eq 1 ]; then
         return 1
     fi
+    # Sync with the wrapper that was just pulled: its startup migrates the
+    # on-disk layout of older versions before it repairs the host state.
     print_success "Refreshing host state..."
-    parse_config --reload || true
-    sync_pi_state || true
+    "$REPO_ROOT/bin/pi-dockerized" config sync || true
     if [ "$_UP_NO_BUILD" = true ]; then
         print_info "Skipping image rebuild (--no-build)."
         print_success "Upgrade complete (code + config synced, image untouched)."

@@ -568,5 +568,28 @@ COMP_WORDS=(pi-dockerized stop "")
 COMP_CWORD=2
 _pi_dockerized
 assert_contains "${COMPREPLY[*]}" "--all" "completion must offer --all for stop"
+COMP_WORDS=(pi-dockerized --profile work profile fix "")
+COMP_CWORD=5
+_pi_dockerized
+assert_contains "${COMPREPLY[*]}" "default" "completion must offer profile names after 'profile fix'"
+COMP_WORDS=(pi-dockerized config set security_policy "")
+COMP_CWORD=4
+_pi_dockerized
+assert_eq "${COMPREPLY[*]}" "strict balanced off" "completion must offer the values of an enum setting"
+
+# Both completion files must cover every command of the help text and every
+# setting (single sources: show_help and SETTING_KEYS).
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/cmd/help.sh"
+help_cmds=$(show_help | sed -n '/^Commands:/,/^$/p' | awk 'NR > 1 && NF { print $1 }' | sort -u)
+for _c in $help_cmds; do
+    [[ " $_PI_COMMANDS " == *" $_c "* ]] || fail "bash completion misses the '$_c' command"
+    grep -q "'$_c:" "$REPO_DIR/completions/zsh.sh" || fail "zsh completion misses the '$_c' command"
+done
+assert_eq "$_PI_SETTINGS" "${SETTING_KEYS[*]}" "bash completion must list every setting"
+for _k in "${SETTING_KEYS[@]}"; do
+    grep -qw "$_k" "$REPO_DIR/completions/zsh.sh" || fail "zsh completion misses setting $_k"
+done
+unset _c _k help_cmds
 
 echo "All wrapper-args tests passed."

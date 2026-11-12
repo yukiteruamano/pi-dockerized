@@ -33,9 +33,14 @@ Commands:
     rollback            Go back to the image the last build/pull replaced
     version             Show wrapper, image, guard, policy-set and Pi versions
     config [show|edit|get|set|path|sync]           Wrapper config (INI)
-    config profiles [list|create NAME|remove NAME] Named profiles (own config, keys, state)
     config pi [path|edit]             Pi agent config (mcp.json)
     config allow [path|edit]          Host allow rules for the guard (allow.json)
+    profile [list]                    Named profiles (own config, secrets, keys, state)
+    profile create NAME | remove NAME [--yes]   Add or delete a profile (names are unique)
+    profile show|path [NAME]          A profile's settings or directory
+    profile check|fix [NAME]          Audit a whole profile / repair it, then audit again
+    profile run NAME [RUN ARGS]       Start a session with that profile
+    profile root [path|edit]          Routing config (default_profile, profile.map)
     clean               Remove the Docker image (all tags)
     help                Show this help message
 
@@ -58,7 +63,8 @@ Examples:
     $0 run                          # Run in current directory
     $0 run /path/to/project         # Run in specific directory
     $0 run --untrusted ~/src/repo   # Run with the strictest setup
-    $0 --profile work run           # Use the "work" profile (own config, keys, state)
+    $0 profile run work             # Use the "work" profile (same as --profile work run)
+    $0 profile fix work             # Check the whole "work" profile and repair it
     $0 auth                         # Check provider credentials
     $0 exec "Explain this repo"     # Non-interactive prompt
     git diff | $0 exec -            # Prompt read from stdin
@@ -83,7 +89,7 @@ Security Features:
       (extensions) live on the host (kept across rebuilds), mounted read-only
     - MCP servers (mcp.json) and the security guard are enforced read-only
     - Persistent state: Pi skills, sessions, auth and MCP OAuth live on the
-      host under ~/.config/pi-dockerized/home/ and survive rebuilds
+      host under ~/.config/pi-dockerized/profiles/<name>/home/ and survive rebuilds
     - Non-root user: runs as the host UID/GID with all capabilities dropped
     - Automatic cleanup: containers are removed on exit (--rm)
 

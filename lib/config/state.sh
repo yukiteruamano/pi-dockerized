@@ -23,7 +23,7 @@ ensure_pi_dirs() {
 # to the user. Only directories and files this user owns are touched.
 harden_state_permissions() {
     local agent="$PI_HOME/.pi/agent" dir file
-    for dir in "$CONFIG_DIR" "$PI_HOME" "$PI_HOME/.pi" "$agent" "$agent/sessions"; do
+    for dir in "$PI_CONFIG_ROOT" "$PI_CONFIG_ROOT/profiles" "$CONFIG_DIR" "$PI_HOME" "$PI_HOME/.pi" "$agent" "$agent/sessions"; do
         if [ -d "$dir" ] && [ -O "$dir" ]; then
             chmod 700 "$dir" 2>/dev/null || true
         fi
@@ -192,6 +192,17 @@ check_global_install() {
 # Usage: check_pi_state
 check_pi_state() {
     local stale=false
+    check_agent_state || stale=true
+    # Global host integration (bin/ on PATH + rc lines); report-only here.
+    check_global_install || stale=true
+    [ "$stale" = false ]
+}
+
+# The per-profile part of check_pi_state: the agent tree under PI_HOME and
+# the secrets file's permissions. Pure reads only; backs `profile check`.
+# Usage: check_agent_state
+check_agent_state() {
+    local stale=false
     local agent="$PI_HOME/.pi/agent"
 
     # mcp.json must exist and parse; it is never edited by sync.
@@ -277,11 +288,6 @@ check_pi_state() {
         fi
     fi
 
-    # Global host integration (bin/ on PATH + rc lines); report-only here.
-    if ! check_global_install; then
-        stale=true
-    fi
-
     if [ "$stale" = true ]; then
         return 1
     fi
@@ -293,6 +299,22 @@ check_pi_state() {
 # Usage: maybe_drift_hint
 maybe_drift_hint() {
     check_pi_state >/dev/null 2>&1 || echo "Host state drift detected: run 'pi-dockerized config sync' to repair."
+}
+
+# Seed the agent tree and repair an unparsable mcp.json (user servers are only
+# lost when the file is already broken; the broken copy is kept as .bak).
+# Usage: repair_agent_state
+repair_agent_state() {
+    ensure_pi_dirs
+    local mcp="$PI_HOME/.pi/agent/mcp.json" v=0
+    if [ -f "$mcp" ]; then
+        json_valid "$mcp" || v=$?
+        if [ "$v" -eq 1 ]; then
+            cp "$mcp" "$mcp.bak" 2>/dev/null || true
+            printf '{\n  "mcpServers": {}\n}\n' >"$mcp" 2>/dev/null || true
+            config_warning "Backed up broken mcp.json to mcp.json.bak and reseeded it"
+        fi
+    fi
 }
 
 # (Re)create the host-side Pi state and report the result.
@@ -324,19 +346,7 @@ sync_pi_state() {
     fi
 
     config_info "Refreshing host-side Pi state..."
-    ensure_pi_dirs
-
-    # Repair an unparsable mcp.json (user servers are only lost when the file is
-    # already broken; the broken copy is kept as .bak).
-    local mcp="$PI_HOME/.pi/agent/mcp.json" v=0
-    if [ -f "$mcp" ]; then
-        json_valid "$mcp" || v=$?
-        if [ "$v" -eq 1 ]; then
-            cp "$mcp" "$mcp.bak" 2>/dev/null || true
-            printf '{\n  "mcpServers": {}\n}\n' >"$mcp" 2>/dev/null || true
-            config_warning "Backed up broken mcp.json to mcp.json.bak and reseeded it"
-        fi
-    fi
+    repair_agent_state
 
     # Drop the legacy ~/.local/bin symlink (nothing is ever installed there
     # anymore; the binary is reached via <install>/bin on PATH). A real file is
