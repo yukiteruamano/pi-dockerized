@@ -11,6 +11,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN="$REPO_DIR/bin/pi-dockerized"
+# The checkout's own release: images "of this version" follow it across bumps.
+CUR_VER="$(sed -n 's/^WRAPPER_VERSION="\(.*\)"$/\1/p' "$BIN")"
 
 export TMPDIR="${TMPDIR:-/tmp/pi}"
 mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR="/tmp"
@@ -382,7 +384,7 @@ assert_contains "$out" "bash" "shell starts bash"
 out="$(FAKE_IMAGE_VERSION=0.0.1 DRY_RUN=true bin run "$PROJECT" 2>&1)"
 assert_contains "$out" "built by wrapper 0.0.1" "a stale image must be reported"
 printf 'setting.docker_socket=true\n' >"$CONFIG_FILE"
-out="$(FAKE_IMAGE_VERSION=0.16.0 FAKE_DOCKER_CLI=false DRY_RUN=true bin run "$PROJECT" 2>&1)"
+out="$(FAKE_IMAGE_VERSION=${CUR_VER} FAKE_DOCKER_CLI=false DRY_RUN=true bin run "$PROJECT" 2>&1)"
 assert_contains "$out" "no Docker CLI" "docker socket without the CLI in the image must be reported"
 init_config_file >/dev/null
 
@@ -477,8 +479,8 @@ rm -f "$AGENT/sessions/sess-1.json"
 out="$(PATH="$FAKE_BIN:/usr/bin:/bin" "$BIN" pull 2>&1)" && fail "pull without cosign must fail"
 assert_contains "$out" "cosign is required" "pull explains why it refused"
 : >"$FAKE_DOCKER_LOG"
-FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=999 bin pull v0.16.0 --no-verify >/dev/null 2>&1 || fail "pull --no-verify"
-assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pull ghcr.io/yukiteruamano/pi-dockerized:v0.16.0" "pull fetches the requested tag"
+FAKE_PULLED_VERSION=${CUR_VER} FAKE_PULLED_GUARD=999 bin pull v${CUR_VER} --no-verify >/dev/null 2>&1 || fail "pull --no-verify"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pull ghcr.io/yukiteruamano/pi-dockerized:v${CUR_VER}" "pull fetches the requested tag"
 
 # --- Image lifecycle: lock smoke test, downgrade refusal, previous/rollback ----------
 # The smoke test also checks the guard lock for a uid other than the image's.
@@ -488,23 +490,23 @@ assert_contains "$(cat "$FAKE_DOCKER_LOG")" "--user 4242:4242 --group-add coder 
     "the smoke test checks the guard lock for another uid"
 # pull: an image older than this checkout's guard or wrapper is refused.
 : >"$FAKE_DOCKER_LOG"
-out="$(FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=1 bin pull v0.16.0 --no-verify 2>&1)" &&
+out="$(FAKE_PULLED_VERSION=${CUR_VER} FAKE_PULLED_GUARD=1 bin pull v${CUR_VER} --no-verify 2>&1)" &&
     fail "pull must refuse an image with an older guard"
 assert_contains "$out" "older than guard" "pull names the guard downgrade"
-assert_contains "$(cat "$FAKE_DOCKER_LOG")" "rmi ghcr.io/yukiteruamano/pi-dockerized:v0.16.0" "a refused downgrade is discarded"
-assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v0.16.0 pi-dockerized:latest" "a refused downgrade is not promoted"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "rmi ghcr.io/yukiteruamano/pi-dockerized:v${CUR_VER}" "a refused downgrade is discarded"
+assert_not_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v${CUR_VER} pi-dockerized:latest" "a refused downgrade is not promoted"
 out="$(FAKE_PULLED_VERSION=0.1.0 FAKE_PULLED_GUARD=999 bin pull v0.1.0 --no-verify 2>&1)" &&
     fail "pull must refuse an older wrapper release"
 assert_contains "$out" "older than" "pull names the release downgrade"
 out="$(FAKE_IMAGE_VERSION=9.9.9 FAKE_PULLED_VERSION=1.0.0 FAKE_PULLED_GUARD=999 bin pull v1.0.0 --no-verify 2>&1)" &&
     fail "pull must refuse a release older than the current image"
-out="$(FAKE_PULLED_VERSION='' FAKE_PULLED_GUARD=999 bin pull v0.16.0 --no-verify 2>&1)" &&
+out="$(FAKE_PULLED_VERSION='' FAKE_PULLED_GUARD=999 bin pull v${CUR_VER} --no-verify 2>&1)" &&
     fail "pull must refuse an image without a version label"
 : >"$FAKE_DOCKER_LOG"
-FAKE_PULLED_VERSION=0.16.0 FAKE_PULLED_GUARD=1 bin pull v0.16.0 --no-verify --allow-downgrade >/dev/null 2>&1 ||
+FAKE_PULLED_VERSION=${CUR_VER} FAKE_PULLED_GUARD=1 bin pull v${CUR_VER} --no-verify --allow-downgrade >/dev/null 2>&1 ||
     fail "pull --allow-downgrade must accept an older image"
-assert_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v0.16.0 pi-dockerized:latest" "an allowed downgrade is promoted"
-assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pi-dockerized:0.16.0-guard1" "the version tag names the pulled image's own guard"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "tag ghcr.io/yukiteruamano/pi-dockerized:v${CUR_VER} pi-dockerized:latest" "an allowed downgrade is promoted"
+assert_contains "$(cat "$FAKE_DOCKER_LOG")" "pi-dockerized:${CUR_VER}-guard1" "the version tag names the pulled image's own guard"
 # Pull verification only trusts the publish workflow on a version tag.
 grep -q 'image\\.yml@refs/tags/v' "$REPO_DIR/lib/cmd/image.sh" || fail "cosign identity must be pinned to image.yml on a version tag"
 # Promoting the image already in use keeps the real previous image.
