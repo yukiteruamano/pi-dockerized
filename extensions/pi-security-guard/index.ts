@@ -21,6 +21,10 @@
 //   off      — vendored patterns are disabled entirely; the built-in backstops
 //              in backstops.mjs stay active.
 //
+// PI_DOCKERIZED_GIT_HARDENING (`setting.git_hardening`): "0" lets destructive
+// git commands through (`clean -f`, `reset --hard`, forced/deleting `push`);
+// anything else, or unset, refuses them in every mode.
+//
 // The vendored unsafe/injection pattern sets in ./policies/*.json (upstream
 // opencode-policy, MIT — see policies/README.md) are evaluated with the same
 // first-match semantics as upstream (new RegExp(pattern, flags ?? "i")).
@@ -64,6 +68,8 @@ const POLICY_MODE = (
   process.env.PI_DOCKERIZED_POLICY || "balanced"
 ).toLowerCase();
 const ALLOW_FILE = process.env.PI_DOCKERIZED_ALLOW_FILE || "";
+// Only an explicit "0" turns the destructive-git backstop off.
+const GIT_HARDENING = process.env.PI_DOCKERIZED_GIT_HARDENING !== "0";
 const AUDIT_FILE =
   process.env.PI_DOCKERIZED_AUDIT_FILE || "/home/coder/.pi/agent/audit.log";
 const MAX_AUDIT_BYTES = 1024 * 1024;
@@ -146,6 +152,7 @@ export default function (pi: ExtensionAPI) {
         allowPatterns: ALLOW_PATTERNS,
         unknownTools: POLICY_MODE === "strict" ? "deny" : "scan",
         allowedTools: ALLOWED_TOOLS,
+        gitHardening: GIT_HARDENING,
       });
       if (!result) return undefined;
       audit(event.toolName, event.input, result.rule);

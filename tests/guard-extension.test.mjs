@@ -169,6 +169,19 @@ const dir = installExtension("ext");
   check("off: capitalized Bash writing .git is blocked", shellish.results?.[1]?.block === true);
 }
 
+// --- Destructive git (setting.git_hardening) ------------------------------------------
+{
+  const calls = [bash("git clean -fdx"), bash("git push --force"), bash("echo x > .git/hooks/pre-commit")];
+  const byDefault = runEvents(dir, calls);
+  check("git hardening is on by default", byDefault.results?.[0]?.block === true && byDefault.results?.[1]?.block === true);
+  const on = runEvents(dir, calls, { PI_DOCKERIZED_GIT_HARDENING: "1" });
+  check("git hardening on refuses destructive git", on.results?.[0]?.block === true);
+  const off = runEvents(dir, calls, { PI_DOCKERIZED_GIT_HARDENING: "0" });
+  check("git hardening off allows git clean", off.results?.[0] === null);
+  check("git hardening off allows a forced push", off.results?.[1] === null);
+  check("git hardening off keeps the .git write backstop", off.results?.[2]?.block === true);
+}
+
 // --- Host allow file ---------------------------------------------------------------------
 {
   const allowFile = join(root, "allow.json");

@@ -65,6 +65,7 @@ const canaries = [
   ["bash", { command: "cp hook .gi?/hooks/" }, "block"],
   ["bash", { command: "cat .e$()nv" }, "block"],
   ["bash", { command: "grep -r . ~/.pi/agent" }, "block"],
+  ["bash", { command: "git push --force origin main" }, "block"],
   ["bash", { command: "ls -la" }, "allow"],
   ["bash", { command: "git status" }, "allow"],
   ["bash", { command: "git config user.name Pi" }, "allow"],

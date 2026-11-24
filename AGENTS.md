@@ -22,7 +22,9 @@ No package manager files and no build step for the wrapper itself.
 - `lib/config-lib.sh` — Loader for the shared library sourced by other scripts.
   The code lives in `lib/config/`, one responsibility per module: `core.sh`
   (constants, profiles, logging `print_*`, path helpers), `mount-policy.sh`
-  (what may be mounted and where), `state.sh` (host-state seeding/sync/perms),
+  (what may be mounted and where), `git-protect.sh` (read-only Git metadata
+  mounts incl. nested repositories and worktrees, the post-session Git check),
+  `state.sh` (host-state seeding/sync/perms),
   `gpg-ssh.sh` (agent forwarding), `docker-args.sh` (docker run args, incl.
   `build_pi_args`), `config-file.sh` (the annotated file a fresh profile
   starts from), `settings.sh` (config file I/O, `config get/set`),
@@ -212,8 +214,15 @@ stderr so command output stays pipeable. Color codes are plain variables
   `--network`, `--user`, `--group-add coder`, `--cap-drop=ALL`,
   `no-new-privileges`, `--label pi-dockerized=1`, `PI_CODING_AGENT_DIR`,
   `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY`, `PI_DOCKERIZED_POLICY`,
-  `PI_DOCKERIZED_ALLOWED_TOOLS`, `PI_DOCKERIZED_ALLOW_FILE`,
-  `PI_DOCKERIZED_AUDIT_FILE`).
+  `PI_DOCKERIZED_ALLOWED_TOOLS`, `PI_DOCKERIZED_GIT_HARDENING`,
+  `PI_DOCKERIZED_ALLOW_FILE`, `PI_DOCKERIZED_AUDIT_FILE`).
+- `build_git_readonly_args` / `git_watch_start` / `git_watch_report`
+  (`git-protect.sh`) — `setting.git_hardening` (default on, forced for
+  `--untrusted`): nested repositories (`GIT_SCAN_DEPTH`, `GIT_MOUNT_MAX`,
+  `node_modules` skipped) and in-project gitfile/symlink targets are mounted
+  read-only like the project's `.git`; `launch_session` reports Git hooks and
+  risky config changed during the session (by ctime, statically: git is never
+  run on the project). The guard refuses destructive git (`gitDestructive`).
 - `validate_mount_source` / `validate_container_path` (`mount-policy.sh`) — the
   only gate for custom mounts, the project mount (`resolve_project_dir`) and the
   git-worktree mount; extend their lists rather than special-casing in callers.
@@ -264,6 +273,7 @@ setting.network=host
 setting.security_policy=balanced
 setting.allowed_tools=
 setting.git_readonly=true
+setting.git_hardening=true
 setting.verify_updates=true
 setting.memory=4g
 setting.cpus=2
@@ -392,6 +402,7 @@ Host paths are relative to the profile directory (`profiles/<name>/`).
 | `home/.pi-lens/` | `/home/coder/.pi-lens/` | rw | pi-lens state |
 | `~/.claude/skills/`, `~/.agents/skills/` | idem | ro | Compat skills (never the whole directories) |
 | `$PROJECT_DIR/.git`, `.gitmodules` | idem | **ro** | Git metadata (`setting.git_readonly`, default on) |
+| Nested `.git`/`.gitmodules`, in-project gitdir and symlink targets | idem | **ro** | `setting.git_hardening` (default on, with `git_readonly`) |
 | `~/.composio/` | idem | rw | Composio CLI (custom mount) |
 | `/var/run/docker.sock` | idem | rw (opt-in) | Docker socket |
 | `home/.gnupg-sessions/<pid>/` | `/home/coder/.gnupg/` | rw (opt-in) | This session's mirrored public GnuPG material (removed when it ends) |

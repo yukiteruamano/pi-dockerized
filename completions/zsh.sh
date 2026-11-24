@@ -68,7 +68,7 @@ _pi_dockerized() {
     )
     settings=(
         ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
-        gpg_relay docker_socket git_readonly network security_policy allowed_tools
+        gpg_relay docker_socket git_readonly git_hardening network security_policy allowed_tools
         verify_updates memory cpus pids_limit env_file theme model default_profile
     )
 
@@ -143,7 +143,7 @@ _pi_dockerized() {
                                 compadd $settings
                             elif (( CURRENT == 4 )); then
                                 case $words[3] in
-                                    ssh_agent_support|gpg_agent_support|gpg_allow_main_socket|gpg_autostart_agent|gpg_relay|docker_socket|git_readonly|verify_updates)
+                                    ssh_agent_support|gpg_agent_support|gpg_allow_main_socket|gpg_autostart_agent|gpg_relay|docker_socket|git_readonly|git_hardening|verify_updates)
                                         compadd true false ;;
                                     network) compadd host bridge ;;
                                     security_policy) compadd strict balanced off ;;

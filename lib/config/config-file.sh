@@ -55,6 +55,12 @@ init_config_file() {
 # that runs outside the sandbox. With it on, commit/stash/fetch from the host.
 # setting.git_readonly=true
 
+# Extra Git protections (default: true; always on for --untrusted): nested
+# repositories and in-project gitfile/symlink targets are mounted read-only
+# too, Git metadata changed during a session is reported when it ends, and
+# the guard refuses git clean -f, reset --hard and forced/deleting pushes.
+# setting.git_hardening=true
+
 # Container network: host (default, simple; shares the host network namespace)
 # or bridge (more isolated; host services are reached via host.docker.internal).
 # setting.network=host

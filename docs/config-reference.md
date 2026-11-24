@@ -15,6 +15,7 @@ with `pi-dockerized config set <key> <value>`, inspect with
 | `gpg_relay` | bool | `true` | Relay sockets from `/run/*` tmpfs through a normal-filesystem socket Docker can bind |
 | `docker_socket` | bool | `false` | Mount `/var/run/docker.sock` (root-equivalent on the host; rebuild the image after enabling) |
 | `git_readonly` | bool | `true` | Mount the project's `.git` and `.gitmodules` read-only (Git on the host runs hooks and config from them). Commit, stash and fetch from the host; `--untrusted` forces it on |
+| `git_hardening` | bool | `true` | Extra Git protections: nested repositories (up to 4 levels, not under `node_modules`; at most 32 mounts) and gitfile/symlink `.git` targets inside the project are mounted read-only too (with `git_readonly`); Git hooks/config changed during a session are reported when it ends; the guard refuses `git clean -f`, `reset --hard` and forced, mirroring or deleting pushes. `--untrusted` forces it on |
 | `network` | `host`\|`bridge` | `host` | Container network; `--untrusted` forces `bridge`. `host` also shares abstract Unix sockets (X11, D-Bus) with the host |
 | `security_policy` | `strict`\|`balanced`\|`off` | `balanced` | Guard pattern sets; backstops stay active even when `off` |
 | `allowed_tools` | list | empty | Strict-mode allowlist: `name`, `name:*`, or `name:scope+scope` (comma-separated) |

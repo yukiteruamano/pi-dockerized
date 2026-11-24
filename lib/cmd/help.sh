@@ -104,6 +104,11 @@ pattern sets enforced by the baked security-guard extension. The default
 balanced drops patterns meant for shared cloud sandboxes and other common
 false positives while keeping the dangerous ones.
 
+Git: setting.git_readonly mounts the project's .git read-only (commit from the
+host); setting.git_hardening (default true) also protects nested repositories,
+reports Git metadata changed during a session and refuses git clean -f,
+reset --hard and forced pushes.
+
 Pi's self-update is disabled inside the container (PI_SKIP_VERSION_CHECK=1).
 
 For more information, see README.md

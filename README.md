@@ -314,6 +314,7 @@ setting.ssh_agent_support=false
 setting.gpg_agent_support=false
 setting.docker_socket=false
 setting.git_readonly=true
+setting.git_hardening=true
 setting.network=host
 setting.security_policy=balanced
 setting.allowed_tools=
@@ -350,6 +351,7 @@ Host paths are relative to the profile's directory
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | path with `$HOME` stripped | rw | Project files |
 | `$PROJECT_DIR/.git`, `.gitmodules` | idem | **ro** | Git metadata (`setting.git_readonly`, default on): commit, stash and fetch from the host |
+| Nested `.git`/`.gitmodules`, in-project gitdir and symlink targets | idem | **ro** | `setting.git_hardening` (default on, with `git_readonly`): repositories up to 4 levels deep, not under `node_modules`, at most 32 mounts |
 | `home/.pi/agent/mcp.json` | `/home/coder/.pi/agent/mcp.json` | **ro** | MCP servers (host-edited) |
 | `home/.pi/agent/skills/` | `/home/coder/.pi/agent/skills/` | **ro** | Skills (host-edited) |
 | `home/.pi/agent/models.json` | `/home/coder/.pi/agent/models.json` | **ro** | Provider definitions (host-edited; absent or `--untrusted`: not mounted) |

@@ -44,7 +44,9 @@ import {
   DENY_BASH,
   DENY_READ,
   DENY_SECRET_PATH,
+  blankGitMessages,
   gitConfigWrite,
+  gitDestructive,
   globTargetsGit,
   globTargetsSecret,
 } from "../extensions/pi-security-guard/backstops.mjs";
@@ -1168,6 +1170,108 @@ check("AGENT_DIR_RE: unlisted entry", AGENT_DIR_RE.test("cat ~/.pi/agent/models.
     }
   }
   if (process.env.GUARD_TIMING) console.log(`slowest rule: ${worst.id} on ${worst.name}, ${worst.ms.toFixed(1)} ms`);
+}
+
+// Destructive git (setting.git_hardening, guard 10): refused by default in
+// every mode, allowed with gitHardening=false; the neighbours stay allowed.
+{
+  const gitCall = (mode, command, gitHardening) => {
+    const res = evaluateToolCall({
+      tool: "bash",
+      input: { command },
+      cwd: PROJECT,
+      unsafePatterns: selectRules(compile(loadRules("unsafe-tool-patterns.json")), mode),
+      injectionPatterns: [],
+      allowPatterns: compile(loadRules("allow-patterns.json")),
+      ...(gitHardening === undefined ? {} : { gitHardening }),
+    });
+    return res?.block ? res.rule : "allow";
+  };
+  const destructive = [
+    "git clean -fdx",
+    "git clean -f",
+    "git clean --force -d",
+    "git -C sub clean -xf",
+    "git reset --hard HEAD~1",
+    "git push --force",
+    "git push -f origin main",
+    "git push -uf origin main",
+    "git push --force-with-lease origin main",
+    "git push --mirror origin",
+    "git push --delete origin old",
+    "git push origin -d old",
+    "git push origin +main",
+    "git push origin :old",
+    "GIT_TRACE=1 git push -f",
+    "timeout 30 git clean -fd",
+    "npm test && git push --force",
+    `bash -c "git clean -fdx"`,
+  ];
+  const kept = [
+    "git clean -n",
+    "git clean -fdn",
+    "git clean --dry-run -f",
+    "git reset --soft HEAD~1",
+    "git reset HEAD file.txt",
+    "git push origin HEAD",
+    "git push -u origin feature",
+    "git push origin HEAD:main",
+    "git push --dry-run --force",
+    "echo git clean -fdx",
+    "grep -rn 'git push --force' docs",
+  ];
+  for (const mode of ["balanced", "strict", "off"]) {
+    for (const command of destructive) {
+      const on = gitCall(mode, command);
+      const off = gitCall(mode, command, false);
+      check(`[${mode}] destructive git blocked: ${command}`, on === "backstop/git-destructive", on);
+      check(`[${mode}] destructive git allowed with git_hardening=false: ${command}`, off === "allow", off);
+    }
+    for (const command of kept) {
+      const got = gitCall(mode, command);
+      check(`[${mode}] non-destructive git allowed: ${command}`, got === "allow", got);
+    }
+  }
+  check("gitDestructive: plain status", gitDestructive("git status") === undefined);
+  check("gitDestructive: quoted refspec", gitDestructive("git push origin '+main'") !== undefined);
+
+  // Commit messages are prose for the backstops; anything that can run stays
+  // judged ("deny": blocked by whichever rule fires first).
+  const messages = [
+    ["git commit -m 'chore: rm stale .git/ refs from docs'", "allow"],
+    ['git commit -am "docs: explain why we cp .gitmodules"', "allow"],
+    ['git commit -m "feat(guard): stop tracking .env"', "allow"],
+    ['git commit -m "añade la sección de .git/hooks"', "allow"],
+    ["git tag -a v1 -m 'rm .git/hooks guidance'", "allow"],
+    ["git commit -m 'first' -m 'second: cp .git/config docs'", "allow"],
+    ['git commit -m "$(cat .env)"', "deny"],
+    ["git commit -m 'x'; echo x > .git/hooks/pre-commit", "deny"],
+    [`bash -c "git commit -m 'a" ; cat .env ; "'"`, "deny"],
+    [`git commit -m "don't rm .git/x"`, "deny"],
+    ["git log -p commit -m 'id_rsa'", "deny"],
+    ["echo -m 'cp .git/config x'", "deny"],
+  ];
+  for (const [command, want] of messages) {
+    const got = gitCall("balanced", command);
+    check(`commit message: ${command}`, want === "allow" ? got === "allow" : got !== "allow", got);
+  }
+  check("blankGitMessages: only git commit-like commands", blankGitMessages("echo -m 'a b'") === "echo -m 'a b'");
+  check("blankGitMessages: blanks the message", blankGitMessages("git commit -m 'a .git/x'") === "git commit -m ''");
+
+  // `git config` reads of code-running keys only print them; writes stay refused.
+  const configCases = [
+    ["git config --get core.hooksPath", "allow"],
+    ["git config --local --get core.fsmonitor", "allow"],
+    ["git config --list", "allow"],
+    ["git config core.hooksPath x", "backstop/git-config"],
+    ["git -c core.fsmonitor=x status", "backstop/bash"],
+    ["git clone -c core.fsmonitor=x https://h/r", "backstop/bash"],
+    ["git submodule foreach 'git config core.hooksPath x'", "backstop/bash"],
+  ];
+  for (const [command, want] of configCases) {
+    const got = gitCall("balanced", command);
+    check(`git config: ${command}`, got === want, got);
+  }
 }
 
 // Guard version consistency: GUARD_VERSION is the single source of truth -

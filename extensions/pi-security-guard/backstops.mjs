@@ -163,8 +163,9 @@ export const DENY_BASH = [
   /(?:>|>>)\s*['"]?[^\s'"|;&]*\.gitmodules\b/i,
   new RegExp(`\\b(?:${GIT_WRITE_VERB})\\b[^\\n|;&]*\\.gitmodules\\b`, "i"),
   // Config-defined programs, also through `git -c` (inline config).
-  // init.templateDir copies hooks into the git dir on `git init`.
-  /\bgit\b[^\n|;&]*\b(?:core\.(?:hookspath|fsmonitor|sshcommand|editor|pager|askpass)|credential\.helper|gpg\.(?:ssh\.)?program|include(?:if)?\.|diff\.external|filter\.[^\s=]*\.(?:clean|smudge|process)|init\.templatedir)/i,
+  // init.templateDir copies hooks into the git dir on `git init`. A plain
+  // `git config` read (`--get`, `--list`) only prints the value.
+  /\bgit\b(?!\s+config\s+(?:--(?:show-origin|show-scope|null|includes|no-includes|global|system|local|worktree)\s+)*(?:--get(?:-all|-regexp|-urlmatch)?|-l|--list|get|list)\s)[^\n|;&]*\b(?:core\.(?:hookspath|fsmonitor|sshcommand|editor|pager|askpass)|credential\.helper|gpg\.(?:ssh\.)?program|include(?:if)?\.|diff\.external|filter\.[^\s=]*\.(?:clean|smudge|process)|init\.templatedir)/i,
   // `git init/clone --template` copies a session-written hooks dir into the
   // git dir (also when re-initializing the project's repository), and
   // `--separate-git-dir` moves the git dir where the write tool may reach it.
@@ -265,6 +266,113 @@ export function gitConfigWrite(command) {
     if (verdict) return verdict;
   }
   return undefined;
+}
+
+// --- destructive git (setting.git_hardening) --------------------------------
+// The project is the host's working copy: `git clean -f` deletes untracked and
+// ignored files (`.env`, build output) that git cannot bring back, and a forced
+// or deleting push rewrites the remote. `reset --hard` only fails on the
+// read-only `.git`, so it is refused too for `setting.git_readonly=false`.
+// Only `git` in command position counts (`echo git clean -f` is prose).
+const COMMAND_WRAPPERS = new Set([
+  "env", "command", "exec", "nohup", "time", "timeout", "xargs", "builtin", "nice", "setsid", "stdbuf",
+]);
+const PUSH_REWRITE_FLAG =
+  /^(?:--force(?:-with-lease(?:=.*)?|-if-includes)?|--mirror|--delete|--prune|-[A-Za-z]*[fd][A-Za-z]*)$/;
+
+/** Index of `git` when it is the command of this word list, else -1. */
+function gitCommandIndex(words) {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === "git" || w.endsWith("/git")) return i;
+    const prev = words[i - 1];
+    const prefix =
+      /^[A-Za-z_]\w*=/.test(w) ||
+      COMMAND_WRAPPERS.has(w) ||
+      (COMMAND_WRAPPERS.has(prev) && w.startsWith("-")) ||
+      (prev === "timeout" && /^[\d.]+[smhd]?$/.test(w));
+    if (!prefix) return -1;
+  }
+  return -1;
+}
+
+/** Why one word list is a destructive git command, or undefined. */
+function gitDestructiveVerdict(words) {
+  let i = gitCommandIndex(words);
+  if (i < 0) return undefined;
+  for (i++; i < words.length && words[i].startsWith("-"); i++) {
+    if (GIT_OPT_WITH_ARG.has(words[i])) i++;
+  }
+  const sub = words[i];
+  const rest = words.slice(i + 1);
+  const short = (letter) => rest.some((w) => new RegExp(`^-[A-Za-z]*${letter}`).test(w));
+  if (sub === "clean") {
+    const force = rest.includes("--force") || short("f");
+    const dryRun = rest.includes("--dry-run") || short("n");
+    return force && !dryRun ? "git clean -f (deletes untracked files on the host)" : undefined;
+  }
+  if (sub === "reset" && rest.includes("--hard")) {
+    return "git reset --hard (discards uncommitted changes)";
+  }
+  if (sub === "push") {
+    if (rest.includes("--dry-run") || rest.includes("-n")) return undefined;
+    if (rest.some((w) => PUSH_REWRITE_FLAG.test(w) || /^[+:]/.test(w))) {
+      return "a forced, mirroring or deleting git push (rewrites the remote)";
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reason when a (de-obfuscated) command is a destructive git command, else
+ * undefined. Split at shell operators like gitConfigWrite.
+ */
+export function gitDestructive(command) {
+  for (const segment of command.split(/[;&|\n`(){}]+/)) {
+    const words = segment
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.replace(/^['"]+|['"]+$/g, ""));
+    const verdict = gitDestructiveVerdict(words);
+    if (verdict) return verdict;
+  }
+  return undefined;
+}
+
+// --- commit messages ----------------------------------------------------------
+// `git commit -m "chore: rm stale .git/ refs"` names `.git` only as prose. A
+// message of plain characters (no quotes, separators, substitutions, escapes or
+// redirections) can neither end the command nor run anything, whatever the
+// quoting context (mid-command, a parenthesis is a syntax error, never a
+// subshell), so it is blanked before the deny-lists scan the command.
+// Anything else is left for them to judge (fail closed).
+const GIT_MESSAGE_SUBCOMMANDS = new Set(["commit", "tag", "stash", "notes", "merge"]);
+const GIT_MESSAGE_RE =
+  /(\s(?:-[A-Za-z]*m|--message)(?:=|\s*))(['"])([\p{L}\p{N}\p{M} \t.,:/_+=@%#!?*~^\[\]{}()-]+)\2/gu;
+// Each candidate scans back to the start of its command: bounded so a line of
+// repeated `-m 'x'` stays linear (the rest is left as is, fail closed).
+const MAX_MESSAGE_CANDIDATES = 16;
+
+/** True when the command before `offset` is `git <commit|tag|...>`. */
+function inGitMessageCommand(command, offset) {
+  const start = Math.max(...[";", "&", "|", "\n", "(", "`"].map((c) => command.lastIndexOf(c, offset))) + 1;
+  const words = command.slice(start, offset).trim().split(/\s+/).filter(Boolean);
+  let i = gitCommandIndex(words);
+  if (i < 0) return false;
+  for (i++; i < words.length && words[i].startsWith("-"); i++) {
+    if (GIT_OPT_WITH_ARG.has(words[i])) i++;
+  }
+  return GIT_MESSAGE_SUBCOMMANDS.has(words[i]);
+}
+
+/** The command with plain-text git commit/tag messages emptied. */
+export function blankGitMessages(command) {
+  let candidates = 0;
+  return command.replace(GIT_MESSAGE_RE, (match, flag, quote, _text, offset) => {
+    if (++candidates > MAX_MESSAGE_CANDIDATES || !inGitMessageCommand(command, offset)) return match;
+    return `${flag}${quote}${quote}`;
+  });
 }
 
 // --- globs aimed at secrets -------------------------------------------------

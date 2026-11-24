@@ -78,6 +78,16 @@
 #
 # setting.git_readonly=true
 
+# Extra Git protections (default: true; always on for --untrusted):
+#   - nested repositories (sub/.git, up to 4 levels, not under node_modules)
+#     and gitfile/symlink .git targets inside the project are mounted
+#     read-only as well (with git_readonly=true)
+#   - when a session ends, Git hooks/config changed during it are reported
+#   - the guard refuses git clean -f, git reset --hard and forced, mirroring
+#     or deleting pushes
+#
+# setting.git_hardening=true
+
 # Security policy mode enforced by the baked security-guard extension.
 #   strict   = every vendored policy pattern (upstream opencode-policy), and tools outside Pi's
 #              built-in set (MCP tools, other extensions) are refused unless

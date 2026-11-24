@@ -13,7 +13,7 @@
 # Every setting key, in the order they are written to a fresh file.
 SETTING_KEYS=(
     ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent
-    gpg_relay docker_socket git_readonly network security_policy allowed_tools
+    gpg_relay docker_socket git_readonly git_hardening network security_policy allowed_tools
     verify_updates memory cpus pids_limit env_file theme model default_profile
 )
 
@@ -36,6 +36,7 @@ _setting_spec() {
     gpg_relay) echo "GPG_RELAY bool" ;;
     docker_socket) echo "DOCKER_SOCKET bool" ;;
     git_readonly) echo "GIT_READONLY bool" ;;
+    git_hardening) echo "GIT_HARDENING bool" ;;
     verify_updates) echo "VERIFY_UPDATES bool" ;;
     network) echo "NETWORK enum host,bridge host" ;;
     security_policy) echo "SECURITY_POLICY enum strict,balanced,off balanced" ;;
@@ -63,6 +64,7 @@ reset_settings() {
     GPG_RELAY=true
     DOCKER_SOCKET=false
     GIT_READONLY=true
+    GIT_HARDENING=true
     VERIFY_UPDATES=true
     NETWORK="host"
     SECURITY_POLICY="balanced"

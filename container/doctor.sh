@@ -17,6 +17,11 @@ echo "== security guard =="
 if [ -f "$guard_dir/selftest.mjs" ]; then
     note "guard version: $(node "$guard_dir/selftest.mjs" --version 2>&1)"
     note "policy mode: ${PI_DOCKERIZED_POLICY:-balanced}"
+    if [ "${PI_DOCKERIZED_GIT_HARDENING:-1}" = 0 ]; then
+        note "git hardening: off (destructive git commands allowed)"
+    else
+        note "git hardening: on"
+    fi
     if [ -f "$guard_dir/policies/VERSION" ]; then
         note "policy set version: $(cat "$guard_dir/policies/VERSION")"
     fi

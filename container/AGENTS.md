@@ -49,7 +49,11 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
   `credential.helper` or `gpg.program`: Git runs them on the host.
 - The project's `.git` is normally mounted read-only: `git status`, `log`
   and `diff` work, but `commit`, `stash`, `add` and `fetch` fail. Leave
-  commits to the user (on the host) instead of working around it.
+  commits to the user (on the host) instead of working around it. Nested
+  repositories are normally read-only too, and the user is told about any Git
+  hook or config changed during the session.
+- `git clean -f`, `git reset --hard` and forced, mirroring or deleting pushes
+  are normally blocked (`setting.git_hardening`): ask the user to run them.
 - `trust.json` is read-only: `/trust` does not persist from a session.
 - A single command or tool input over 32 KiB is refused: create large files
   with the `write` tool instead of a shell heredoc. File contents written with

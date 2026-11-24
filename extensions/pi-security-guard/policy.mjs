@@ -20,7 +20,9 @@ import {
   DENY_READ,
   DENY_SECRET_PATH,
   SECRET_PATH_RE,
+  blankGitMessages,
   gitConfigWrite,
+  gitDestructive,
   globTargetsGit,
   globTargetsSecret,
 } from "./backstops.mjs";
@@ -46,7 +48,7 @@ export {
 
 // Bump when guard behavior changes. Single source of truth: the wrapper's
 // `version`/`doctor` read it from the image through selftest.mjs.
-export const GUARD_VERSION = 9;
+export const GUARD_VERSION = 10;
 
 // Longest value evaluated. Several vendored and backstop patterns scan with
 // `[^\n|;&]*`, which is quadratic on long lines. Beyond the cap the call is
@@ -290,9 +292,11 @@ function scanVendored({ shellLike, strings, unsafePatterns, allowPatterns }) {
 const MAX_NESTED_DEPTH = 3;
 
 // Built-in backstops for shell commands, covering gaps the pattern sets miss.
-// Also run over every string of tools this policy does not model.
-function scanShellBackstops(command, depth = 0) {
-  const live = globForm(command);
+// Also run over every string of tools this policy does not model. Plain-text
+// git commit messages are prose, not targets: they are blanked first.
+function scanShellBackstops(command, opts, depth = 0) {
+  const scanned = blankGitMessages(command);
+  const live = globForm(scanned);
   const glob = globTargetsSecret(live);
   if (glob) {
     return blocked(
@@ -308,12 +312,12 @@ function scanShellBackstops(command, depth = 0) {
     );
   }
   if (depth < MAX_NESTED_DEPTH) {
-    for (const nested of nestedCommands(command)) {
-      const hit = scanShellBackstops(nested, depth + 1);
+    for (const nested of nestedCommands(scanned)) {
+      const hit = scanShellBackstops(nested, opts, depth + 1);
       if (hit) return hit;
     }
   }
-  for (const form of shellVariants(command)) {
+  for (const form of shellVariants(scanned)) {
     if (AGENT_DIR_RE.test(form) || ANCESTOR_SWEEP.some((re) => re.test(form))) {
       return blocked(
         "Blocked by pi-dockerized security policy: the agent directory holds credentials: " +
@@ -326,6 +330,13 @@ function scanShellBackstops(command, depth = 0) {
       return blocked(
         `Blocked by pi-dockerized security policy: ${config} can run programs through the host's git (allowed: user.name/email, init.defaultBranch, pull/push and color preferences, core.autocrlf/eol)`,
         "backstop/git-config",
+      );
+    }
+    const destructive = opts.gitHardening ? gitDestructive(form) : undefined;
+    if (destructive) {
+      return blocked(
+        `Blocked by pi-dockerized security policy: ${destructive}; run it on the host, or set setting.git_hardening=false`,
+        "backstop/git-destructive",
       );
     }
     for (const pattern of DENY_BASH) {
@@ -522,6 +533,9 @@ export function evaluateToolCall({
   allowPatterns,
   unknownTools = "scan",
   allowedTools = [],
+  // setting.git_hardening: destructive git commands are refused. On unless
+  // the wrapper says otherwise (fail closed).
+  gitHardening = true,
 }) {
   const obj = input ?? {};
   const rawStrings = inputStrings(tool, obj);
@@ -594,13 +608,14 @@ export function evaluateToolCall({
     }
   }
 
+  const shellOpts = { gitHardening: gitHardening !== false };
   if (SHELL_TOOLS.has(tool)) {
-    const hit = scanShellBackstops(command);
+    const hit = scanShellBackstops(command, shellOpts);
     if (hit) return hit;
   } else if (!known) {
     for (const value of strings) {
       if (typeof value !== "string" || value === "") continue;
-      const hit = scanShellBackstops(value);
+      const hit = scanShellBackstops(value, shellOpts);
       if (hit) return hit;
     }
   }

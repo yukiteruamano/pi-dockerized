@@ -482,6 +482,98 @@ assert_contains "$vols" "$AGENT/auth.json:/home/coder/.pi/agent/auth.json:rw" "-
 SESSION_UNTRUSTED=false SESSION_POLICY=""
 ALLOWED_TOOLS=""
 
+# --- setting.git_hardening -------------------------------------------------------------
+NEST="$TMP/nest"
+mkdir -p "$NEST/.git/modules/sub" "$NEST/sub" "$NEST/lib/inner/.git" "$NEST/node_modules/dep/.git" \
+    "$NEST/a/b/c/d/e/.git" "$NEST/sep/meta" "$NEST/realgit" "$NEST/lnk" "$NEST/out" "$NEST/we,ird/.git" \
+    "$NEST/bad,na:me/.git" "$TMP/outside-gitdir"
+touch "$NEST/.gitmodules" "$NEST/lib/inner/.gitmodules"
+printf 'gitdir: ../.git/modules/sub\n' >"$NEST/sub/.git"
+printf 'gitdir: meta\n' >"$NEST/sep/.git"
+printf 'gitdir: %s\n' "$TMP/outside-gitdir" >"$NEST/out/.git"
+ln -s ../realgit "$NEST/lnk/.git"
+mkdir -p "$NEST/lnk2" && ln -s "$HOME" "$NEST/lnk2/.git"
+ro() { printf 'type=bind,source=%s,target=/w/%s,readonly' "$NEST/$1" "$1"; }
+
+GIT_HARDENING=true
+VOLUME_ARGS=()
+build_git_readonly_args "$NEST" /w 2>"$TMP/git-ro.err"
+vols=" ${VOLUME_ARGS[*]} "
+assert_contains "$vols" "$(ro .git)" "the project .git stays read-only"
+assert_contains "$vols" "$(ro lib/inner/.git)" "a nested repository's .git must be read-only"
+assert_contains "$vols" "$(ro lib/inner/.gitmodules)" "a nested .gitmodules must be read-only"
+assert_contains "$vols" "$(ro sub/.git)" "a submodule gitfile must be read-only"
+assert_contains "$vols" "$(ro sep/meta)" "an in-project gitdir named by a gitfile must be read-only"
+assert_contains "$vols" "$(ro realgit)" "the in-project target of a symlinked .git must be read-only"
+assert_contains "$vols" "$NEST/we,ird/.git:/w/we,ird/.git:ro" "a name with ',' must use -v, never --mount fields"
+assert_not_contains "$vols" "bad,na:me" "a name with both ',' and ':' must not be mounted"
+assert_contains "$(cat "$TMP/git-ro.err")" "could not be mounted read-only" "an unmountable entry must be reported"
+assert_not_contains "$vols" ".git/modules/sub" "a gitdir inside the read-only .git needs no mount of its own"
+assert_not_contains "$vols" "node_modules" "node_modules must not be scanned"
+assert_not_contains "$vols" "a/b/c/d/e" "the scan must stop at GIT_SCAN_DEPTH"
+assert_not_contains "$vols" "outside-gitdir" "a gitdir outside the project must never be mounted"
+assert_not_contains "$vols" "lnk2" "a symlinked .git leaving the project must not be mounted"
+assert_not_contains "$vols" "source=$NEST/lnk/.git" "a symlinked .git must never be bound as such"
+GIT_MOUNT_MAX=2
+VOLUME_ARGS=()
+build_git_readonly_args "$NEST" /w 2>"$TMP/git-ro.err"
+[ "$(printf '%s\n' "${VOLUME_ARGS[@]}" | grep -c 'readonly$')" -eq 2 ] || fail "GIT_MOUNT_MAX must cap the read-only git mounts"
+assert_contains "$(cat "$TMP/git-ro.err")" "limit 2" "going past GIT_MOUNT_MAX must be reported"
+GIT_MOUNT_MAX=32
+GIT_HARDENING=false
+VOLUME_ARGS=()
+build_git_readonly_args "$NEST" /w
+assert_eq "${VOLUME_ARGS[*]}" "--mount $(ro .git) --mount $(ro .gitmodules)" "git_hardening=false must mount only the project's own .git/.gitmodules"
+GIT_HARDENING=true GIT_READONLY=false
+VOLUME_ARGS=()
+build_git_readonly_args "$NEST" /w
+[ "${#VOLUME_ARGS[@]}" -eq 0 ] || fail "git_readonly=false must mount no git metadata read-only"
+GIT_READONLY=true
+
+build_common_docker_args
+assert_contains " ${DOCKER_COMMON_ARGS[*]} " " PI_DOCKERIZED_GIT_HARDENING=1 " "the guard must get git_hardening on"
+GIT_HARDENING=false
+build_common_docker_args
+assert_contains " ${DOCKER_COMMON_ARGS[*]} " " PI_DOCKERIZED_GIT_HARDENING=0 " "the guard must get git_hardening off"
+parse_session_flags --untrusted
+apply_session_overrides >/dev/null || fail "--untrusted must apply"
+assert_eq "$GIT_HARDENING" true "--untrusted must force git_hardening on"
+SESSION_UNTRUSTED=false SESSION_POLICY="" SESSION_NETWORK=""
+env_key_forbidden PI_DOCKERIZED_GIT_HARDENING || fail "the secrets file must not set PI_DOCKERIZED_GIT_HARDENING"
+
+# Post-session check: only what changed during the session, by ctime.
+GIT_HARDENING=true
+git_watch_start "$NEST"
+[ -f "$GIT_WATCH_MARK" ] || fail "git_watch_start must create its marker"
+git_watch_report 2>"$TMP/watch.err"
+[ -s "$TMP/watch.err" ] && fail "an untouched project must report nothing ($(cat "$TMP/watch.err"))"
+[ -z "$GIT_WATCH_MARK" ] || fail "git_watch_report must drop the marker"
+git_watch_start "$NEST"
+mark="$GIT_WATCH_MARK"
+mkdir -p "$NEST/fresh/.git/hooks" "$NEST/lib/inner/.git/hooks"
+printf '#!/bin/sh\n' >"$NEST/lib/inner/.git/hooks/post-checkout"
+chmod +x "$NEST/lib/inner/.git/hooks/post-checkout"
+touch -d '2000-01-01' "$NEST/lib/inner/.git/hooks/post-checkout"
+printf 'x\n' >"$NEST/fresh/.git/hooks/pre-commit.sample"
+printf '[core]\n\tFSMonitor = x\n[includeIf "gitdir:/x"]\n\tpath = y\n' >"$NEST/fresh/.git/config"
+printf '[user]\n\tname = a\n' >"$NEST/lib/inner/.git/config"
+printf 'gitdir: x\n' >"$NEST/sep/.git"
+git_watch_report 2>"$TMP/watch.err"
+report=$(cat "$TMP/watch.err")
+assert_contains "$report" "lib/inner/.git/hooks/post-checkout: executable hook written" "a backdated hook must still be reported (ctime)"
+assert_contains "$report" "fresh/.git/config: config sets fsmonitor,includeif" "risky config keys must be reported by name"
+assert_not_contains "$report" "= x" "config values must never be printed"
+assert_contains "$report" "sep/.git: gitfile written" "a rewritten gitfile must be reported"
+assert_not_contains "$report" "pre-commit.sample" "sample hooks never run and must not be reported"
+assert_not_contains "$report" "lib/inner/.git/config" "a config without risky keys must not be reported"
+[ -e "$mark" ] && fail "the watch marker must be removed"
+GIT_HARDENING=false
+git_watch_start "$NEST"
+[ -z "$GIT_WATCH_MARK" ] || fail "git_hardening=false must not watch"
+GIT_HARDENING=true
+git_watch_start ""
+[ -z "$GIT_WATCH_MARK" ] || fail "a session without a project must not watch"
+
 # --- Git worktree mount ---------------------------------------------------------------
 if command -v git >/dev/null 2>&1; then
     WT_MAIN="$TMP/wt-main"

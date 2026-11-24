@@ -7,6 +7,29 @@ Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
 ## Unreleased
 
+### Security (guard 10, `setting.git_hardening`)
+
+- **New `setting.git_hardening`** (default `true`, forced for `--untrusted`;
+  `false` restores the previous behavior) groups the protections below.
+- **Nested repositories:** with `git_readonly`, every `.git`/`.gitmodules` up
+  to 4 levels deep (not under `node_modules`, at most 32 mounts) is mounted
+  read-only, not only the project's own. A gitfile's in-project gitdir
+  (`--separate-git-dir`) and the in-project target of a symlinked `.git` are
+  mounted read-only too; before, a script written with the `write` tool could
+  plant hooks or `core.fsmonitor` there for the host's git to run.
+- **Post-session check:** when a session ends, Git hooks, `commondir`,
+  gitfiles and config files with code-running keys changed during it are
+  reported (by ctime; git is never run on the project). Covers a project that
+  had no `.git` at start and entries past the mount limits. Report only.
+- **Destructive git:** the guard refuses `git clean -f`, `git reset --hard`
+  and forced, mirroring or deleting pushes in every mode
+  (`backstop/git-destructive`; `PI_DOCKERIZED_GIT_HARDENING=0` lets them
+  through).
+- **False positives:** plain-text `git commit/tag/stash/notes/merge -m`
+  messages are no longer scanned by the backstops (`-m "chore: rm stale .git/
+  refs"` was blocked), and `git config --get/--list` of code-running keys is
+  a read again. Vendored rules (strict mode) still see the message.
+
 ### Security (guard 9)
 
 - **Git hooks without a `.git` path:** `git init`/`git clone` with

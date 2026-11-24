@@ -1,108 +1,8 @@
 #!/bin/bash
 
-# docker-args.sh - git worktree support and docker run argument building.
+# docker-args.sh - docker run argument building.
 # Sourced by lib/config-lib.sh (not executable directly).
 # NOTE: no "set -e" — library file; callers control their own error handling.
-
-# ============================================
-# GIT WORKTREE SUPPORT
-# ============================================
-
-# Detect if a directory is a linked git worktree and print the main repo's .git
-# directory (the common dir), or nothing. A worktree has a .git FILE containing
-# "gitdir: <main>/.git/worktrees/<name>". The project is untrusted content, so
-# the pointer is parsed here (git itself is never run on it) and only accepted
-# when it has the shape git creates: <common>/worktrees/<name>, whose own
-# `gitdir` file points back at this project's .git file. A planted pointer
-# (e.g. a `commondir` aimed at another private repo) is ignored.
-# Usage: main_git_dir=$(detect_git_worktree "/path/to/worktree")
-detect_git_worktree() {
-    local project_dir="$1" line gitdir back common project_real
-
-    [ -f "$project_dir/.git" ] && [ ! -L "$project_dir/.git" ] || return 0
-    IFS= read -r line 2>/dev/null <"$project_dir/.git" || return 0
-    [[ "$line" == "gitdir: "* ]] || return 0
-    gitdir="${line#gitdir: }"
-    [[ "$gitdir" == /* ]] || gitdir="$project_dir/$gitdir"
-    gitdir=$(canonical_path "$gitdir")
-
-    [ "$(basename "$(dirname "$gitdir")")" = worktrees ] || return 0
-    common=$(dirname "$(dirname "$gitdir")")
-
-    # A real worktree's common dir lives outside the worktree. One inside the
-    # project was planted by the session, which could swap it for a symlink
-    # between this check and `docker run` (the daemon follows it).
-    project_real=$(canonical_path "$project_dir")
-    path_within "$common" "$project_real" && return 0
-
-    # The back-pointer git writes for every linked worktree. Regular files
-    # only: a FIFO would hang the wrapper.
-    [ -f "$gitdir/gitdir" ] && [ ! -L "$gitdir/gitdir" ] || return 0
-    IFS= read -r back 2>/dev/null <"$gitdir/gitdir" || return 0
-    [ "$(canonical_path "$back")" = "$(canonical_path "$project_dir/.git")" ] || return 0
-
-    # Sanity check: the common dir must be a real .git directory.
-    if [ ! -d "$common/objects" ] || [ ! -d "$common/refs" ]; then
-        return 0
-    fi
-
-    printf '%s' "$common"
-}
-
-# Build Docker volume/bind args needed for git worktree support.
-# When the project is a git worktree, the .git file points to the main repo's
-# .git directory which lives outside the project dir. We mount the main .git
-# directory (read-only) at its real host path so the gitdir pointer resolves
-# correctly inside the container. The common dir passes the same source and
-# target checks as any other mount, and --untrusted sessions never get it.
-#
-# Read-only is intentional: it preserves the sandbox boundary (container only
-# has write access to the mounted project directory). Read operations like
-# git log, status, diff, and branch work. Write operations (commit, stash,
-# fetch) will fail — run those on the host.
-#
-# Populates GIT_WORKTREE_ARGS array
-# Usage: build_git_worktree_args "/path/to/project"
-build_git_worktree_args() {
-    local project_dir="$1"
-
-    GIT_WORKTREE_ARGS=()
-    [ "$SESSION_UNTRUSTED" != true ] || return 0
-
-    local git_common_dir
-    git_common_dir=$(detect_git_worktree "$project_dir")
-
-    if [ -z "$git_common_dir" ]; then
-        return 0
-    fi
-    if ! validate_mount_source "$git_common_dir" "git worktree" ||
-        ! validate_container_path "$git_common_dir" "the git worktree"; then
-        config_warning "Not mounting the main .git directory; git will be unavailable in the container"
-        return 0
-    fi
-
-    config_info "Git worktree detected — mounting main .git directory (read-only) for git support"
-    config_info "Main git directory: $git_common_dir"
-
-    # Mount the main repo's .git directory at its real host path (read-only)
-    GIT_WORKTREE_ARGS+=(-v "$git_common_dir:$git_common_dir:ro")
-}
-
-# Mount the project's .git (directory or gitfile) and .gitmodules read-only
-# over the project mount (setting.git_readonly, default on). Git on the host
-# executes hooks, config and submodule settings from them, so a writable .git
-# is a sandbox escape that no pattern match can fully close; a read-only bind
-# also makes hard links into it fail (EXDEV). Symlinks are skipped: Docker
-# would follow them to wherever they point.
-# Appends to VOLUME_ARGS. Usage: build_git_readonly_args <project_dir> <container_dir>
-build_git_readonly_args() {
-    local project_dir="$1" container_dir="$2" entry
-    [ "${GIT_READONLY:-true}" = true ] || return 0
-    for entry in .git .gitmodules; do
-        [ -e "$project_dir/$entry" ] && [ ! -L "$project_dir/$entry" ] || continue
-        VOLUME_ARGS+=(--mount "type=bind,source=$project_dir/$entry,target=$container_dir/$entry,readonly")
-    done
-}
 
 # ============================================
 # DOCKER ARG BUILDING
@@ -207,6 +107,12 @@ build_common_docker_args() {
 
     # Strict mode refuses tools outside the built-in set unless listed here.
     DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_ALLOWED_TOOLS=$ALLOWED_TOOLS")
+
+    # setting.git_hardening: the guard refuses destructive git commands unless
+    # this is exactly 0.
+    local git_hardening=1
+    [ "${GIT_HARDENING:-true}" = true ] || git_hardening=0
+    DOCKER_COMMON_ARGS+=(-e "PI_DOCKERIZED_GIT_HARDENING=$git_hardening")
 
     # Where the guard writes its audit log. The allow file is only named when
     # the host one is mounted (build_standard_volume_args): otherwise the guard

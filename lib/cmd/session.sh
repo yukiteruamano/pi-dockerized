@@ -144,17 +144,20 @@ build_session_cmd() {
     fi
 }
 
-# Stop the per-session GnuPG relay (a no-op when none is running).
+# Stop the per-session GnuPG relay (a no-op when none is running) and drop the
+# git watch marker.
 _session_cleanup() {
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
     remove_gpg_mirror
+    git_watch_stop
 }
 
 # A signal (including the terminal closing) must not leave the container, and
 # the project mounted into it, running in the background.
 _session_abort() {
     docker stop -t 5 "$SESSION_CONTAINER" >/dev/null 2>&1 || true
+    git_watch_report
     _session_cleanup
     exit 130
 }
@@ -171,7 +174,9 @@ launch_session() {
     trap _session_cleanup EXIT
     trap _session_abort INT TERM HUP
     local rc=0
+    git_watch_start "$SESSION_PROJECT"
     "${DOCKER_CMD[@]}" || rc=$?
+    git_watch_report
     _session_cleanup
     trap - EXIT INT TERM HUP
     return "$rc"

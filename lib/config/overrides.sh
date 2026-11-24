@@ -120,6 +120,7 @@ apply_session_overrides() {
         GPG_AGENT_SUPPORT=false
         DOCKER_SOCKET=false
         GIT_READONLY=true
+        GIT_HARDENING=true
         CUSTOM_MOUNTS=()
         CUSTOM_MOUNT_KEYS=()
     fi
