@@ -636,6 +636,11 @@ const structured = [
   ["grep", { pattern: "auth.json", path: "src" }, "allow"],
   ["grep", { pattern: "sk-", path: "/home/coder/.pi/agent" }, "deny"],
   ["grep", { pattern: "sk-", path: "~" }, "deny"],
+  // Pi 1.6: find patterns are relative to the search dir and may start with `./`.
+  ["find", { pattern: "./.env", path: "." }, "deny"],
+  ["find", { pattern: "**/.env" }, "deny"],
+  ["find", { pattern: "**/id_ed25519", path: "src" }, "deny"],
+  ["find", { pattern: "./src/*.ts", path: "." }, "allow"],
 ];
 for (const mode of ["strict", "balanced", "off"]) {
   for (const [tool, input, want] of structured) {

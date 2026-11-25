@@ -3,7 +3,7 @@
 # Use Debian slim as lightweight Linux base, pinned by digest so a rebuild gets
 # the same bytes (Renovate bumps tag + digest together). The Docker CLI, when
 # installed, talks to the host's Docker daemon via the opt-in mounted socket.
-FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -15,30 +15,30 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # moving tag breaks reproducibility and widens supply-chain exposure.
 # NVM_VERSION and UV_VERSION are checksum-pinned below: bump them by hand,
 # together with their *_INSTALL_SHA256 (Renovate does not manage them).
-ARG NVM_VERSION=v0.40.8
+ARG NVM_VERSION=v0.41.0
 # renovate: datasource=npm depName=pnpm
-ARG PNPM_VERSION=12.16.1
+ARG PNPM_VERSION=12.23.0
 # uv release; override with --build-arg UV_VERSION=x.y.z
-ARG UV_VERSION=0.13.6
+ARG UV_VERSION=0.13.9
 # Node.js major installed through nvm (Pi requires >= 22.19). The minor/patch
 # floats inside the major so security fixes are picked up on rebuild.
 ARG NODE_VERSION=24
 # Pi CLI release; override with --build-arg PI_VERSION=x.y.z
-ARG PI_VERSION=v1.5.2
+ARG PI_VERSION=v1.6.0
 # qmd (on-device markdown search) release
 # renovate: datasource=npm depName=@tobilu/qmd
-ARG QMD_VERSION=2.8.3
+ARG QMD_VERSION=2.9.0
 # sha256 of each installer script, checked before it runs. The nvm and uv URLs
 # are versioned, so these only change with NVM_VERSION / UV_VERSION (override
 # both together). The pnpm installer is not versioned upstream: if it changes
 # the build stops here so the new script can be reviewed.
-ARG NVM_INSTALL_SHA256=48a0eee9a60e07422dce0eb5774754c83889570ca1ee2566c516acbe8af03a9e
-ARG UV_INSTALL_SHA256=f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7
+ARG NVM_INSTALL_SHA256=045932fe05f0d4247c946f2ec0ec4026dbfd8ce88a5f67ea28d8ea833227f48b
+ARG UV_INSTALL_SHA256=ccc888115ac831bd9c30855c1d4abeae32fce679701d2aac8e72eb0beffb41c2
 ARG PNPM_INSTALL_SHA256=1bf54cf5560709ca7bd09e0676ffa6ce3ddd3db843258cbf74e67a72b783a846
 # yt-dlp release (PyPI). Pinned so a rebuild never pulls an unreviewed release;
 # Renovate bumps it, which also keeps the extractors fresh.
 # renovate: datasource=pypi depName=yt-dlp
-ARG YT_DLP_VERSION=2026.10.26
+ARG YT_DLP_VERSION=2026.11.23
 # Fingerprint of the Docker apt repository's signing key (primary key). The key
 # is downloaded over TLS and only trusted when it matches.
 ARG DOCKER_GPG_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
@@ -189,7 +189,7 @@ RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1
 
 # Install the Pi coding agent CLI globally with pnpm.
 # ARG PI_BUILD_TIME is only passed during 'update' to bust cache.
-# ARG PI_VERSION pins the release (default v1.5.2).
+# ARG PI_VERSION pins the release (default v1.6.0).
 ARG PI_BUILD_TIME=0
 RUN --mount=type=cache,target=/home/coder/.local/share/pnpm/store,uid=1000,gid=1000 \
     pnpm add -g @earendil-works/pi-coding-agent@"${PI_VERSION}" --allow-build=@earendil-works/pi-coding-agent && pi --version
