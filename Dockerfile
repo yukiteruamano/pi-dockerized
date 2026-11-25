@@ -34,7 +34,7 @@ ARG QMD_VERSION=2.8.3
 # the build stops here so the new script can be reviewed.
 ARG NVM_INSTALL_SHA256=48a0eee9a60e07422dce0eb5774754c83889570ca1ee2566c516acbe8af03a9e
 ARG UV_INSTALL_SHA256=f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7
-ARG PNPM_INSTALL_SHA256=53d3ad6ef67d49d6951f3326bd3180e5c504c8f695bcdf73bb61ec7a4d4c9407
+ARG PNPM_INSTALL_SHA256=1bf54cf5560709ca7bd09e0676ffa6ce3ddd3db843258cbf74e67a72b783a846
 # yt-dlp release (PyPI). Pinned so a rebuild never pulls an unreviewed release;
 # Renovate bumps it, which also keeps the extractors fresh.
 # renovate: datasource=pypi depName=yt-dlp

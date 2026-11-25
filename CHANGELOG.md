@@ -5,6 +5,15 @@ Notable changes per release. The wrapper version is `WRAPPER_VERSION` in
 `extensions/pi-security-guard/policy.mjs` (shown by `pi-dockerized version`).
 Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
+## Unreleased
+
+### Build
+
+- Fix the image build: the unversioned pnpm installer script changed upstream
+  (pnpm/get.pnpm.io `febc5a1`, NetBSD x64 support only), so the checksum check
+  failed. `PNPM_INSTALL_SHA256` is repinned to the reviewed script (still only
+  `get.pnpm.io`, `registry.npmjs.org` and `github.com/pnpm/pnpm/releases`).
+
 ## 0.17.0 — guard 10
 
 ### Security (guard 10, `setting.git_hardening`)
