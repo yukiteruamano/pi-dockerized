@@ -5,7 +5,7 @@ Notable changes per release. The wrapper version is `WRAPPER_VERSION` in
 `extensions/pi-security-guard/policy.mjs` (shown by `pi-dockerized version`).
 Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
-## Unreleased
+## 0.17.1 — guard 10
 
 ### Build
 
