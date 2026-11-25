@@ -144,7 +144,24 @@ DRY_RUN=true pi-dockerized run # Print the docker command without running
 
 `--untrusted` only accepts `--policy strict` and cannot be combined with
 `--network host`. Every
-project session prints an `Exposure:` line summarizing what it can reach.
+project session (`run`, `shell`) starts with a summary of what it can reach:
+
+```text
+ℹ Project:    /home/me/src/app
+ℹ Container:  pi-app-150c1d9d (image 0.18.0, Pi 1.6.0, guard 10)
+ℹ Profile:    default
+ℹ Sandbox:    network=host policy=balanced
+ℹ Git:        repo=yes read-only=on hardening=on ro-mounts=2 post-session-check=on
+ℹ Forwarding: ssh-agent=on gpg-agent=on docker-socket=off
+ℹ Resources:  memory=4g cpus=2 pids=4096 timeout=none
+ℹ State:      extensions=on mounts=1 env-file=yes shared-state=on
+```
+
+`Git:` shows `setting.git_readonly`/`setting.git_hardening`, how many Git
+entries are mounted read-only (`writable=N` counts the ones that could not
+be) and whether a worktree's main `.git` is mounted. A setting that removes a
+safeguard (`policy=off`, `git_readonly=false`, `git_hardening=false`) is
+called out with a warning.
 
 ### Profiles
 

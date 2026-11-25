@@ -273,17 +273,21 @@ RUN /usr/local/lib/pi-dockerized/lock-check.sh
 
 # Image metadata: `pi-dockerized` compares the version label with the wrapper's
 # to notice a stale image, and the docker-cli label to notice a missing CLI.
-# These two ARGs change on every release/commit, so they are declared last to
+# The pi-version and guard-version labels are shown in the session summary.
+# These ARGs change on every release/commit, so they are declared last to
 # keep them from invalidating the cache of every layer above.
 ARG WRAPPER_VERSION=dev
 ARG VCS_REF=unknown
+ARG GUARD_VERSION=unknown
 LABEL org.opencontainers.image.title="pi-dockerized" \
       org.opencontainers.image.description="Sandboxed container for the Pi coding agent" \
       org.opencontainers.image.source="https://github.com/yukiteruamano/pi-dockerized" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${WRAPPER_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      pi-dockerized.docker-cli="${INSTALL_DOCKER_CLI}"
+      pi-dockerized.docker-cli="${INSTALL_DOCKER_CLI}" \
+      pi-dockerized.pi-version="${PI_VERSION}" \
+      pi-dockerized.guard-version="${GUARD_VERSION}"
 
 # Default working directory; entrypoint.sh cd's into the project (PI_WORKDIR,
 # falling back to the Docker --workdir set by the wrapper).

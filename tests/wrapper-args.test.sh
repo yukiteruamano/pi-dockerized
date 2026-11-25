@@ -514,20 +514,31 @@ assert_not_contains "$vols" "a/b/c/d/e" "the scan must stop at GIT_SCAN_DEPTH"
 assert_not_contains "$vols" "outside-gitdir" "a gitdir outside the project must never be mounted"
 assert_not_contains "$vols" "lnk2" "a symlinked .git leaving the project must not be mounted"
 assert_not_contains "$vols" "source=$NEST/lnk/.git" "a symlinked .git must never be bound as such"
+out="$(git_protection_summary "$NEST")"
+assert_contains "$out" "repo=yes read-only=on hardening=on ro-mounts=$GIT_RO_MOUNTS writable=1" "the Git summary must count the read-only and the unmountable entries"
+assert_contains "$out" "post-session-check=on" "the Git summary must show the post-session check"
+[ "$GIT_RO_MOUNTS" -gt 2 ] || fail "nested repositories must be counted as read-only mounts"
 GIT_MOUNT_MAX=2
 VOLUME_ARGS=()
 build_git_readonly_args "$NEST" /w 2>"$TMP/git-ro.err"
 [ "$(printf '%s\n' "${VOLUME_ARGS[@]}" | grep -c 'readonly$')" -eq 2 ] || fail "GIT_MOUNT_MAX must cap the read-only git mounts"
 assert_contains "$(cat "$TMP/git-ro.err")" "limit 2" "going past GIT_MOUNT_MAX must be reported"
+assert_eq "$GIT_RO_MOUNTS" 2 "GIT_RO_MOUNTS must count only the mounts made"
 GIT_MOUNT_MAX=32
 GIT_HARDENING=false
 VOLUME_ARGS=()
 build_git_readonly_args "$NEST" /w
 assert_eq "${VOLUME_ARGS[*]}" "--mount $(ro .git) --mount $(ro .gitmodules)" "git_hardening=false must mount only the project's own .git/.gitmodules"
+out="$(git_protection_summary "$NEST")"
+assert_contains "$out" "hardening=off ro-mounts=2 post-session-check=off" "the Git summary must show hardening off"
 GIT_HARDENING=true GIT_READONLY=false
 VOLUME_ARGS=()
 build_git_readonly_args "$NEST" /w
 [ "${#VOLUME_ARGS[@]}" -eq 0 ] || fail "git_readonly=false must mount no git metadata read-only"
+out="$(git_protection_summary "$NEST")"
+assert_contains "$out" "read-only=off" "the Git summary must show git_readonly off"
+assert_not_contains "$out" "ro-mounts" "no read-only mounts are counted with git_readonly off"
+assert_contains "$(git_protection_summary "$TMP/outside-gitdir")" "repo=no" "a project without .git is reported as such"
 GIT_READONLY=true
 
 build_common_docker_args

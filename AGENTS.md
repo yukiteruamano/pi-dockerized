@@ -223,6 +223,12 @@ stderr so command output stays pipeable. Color codes are plain variables
   read-only like the project's `.git`; `launch_session` reports Git hooks and
   risky config changed during the session (by ctime, statically: git is never
   run on the project). The guard refuses destructive git (`gitDestructive`).
+- `print_session_header` (`session.sh`) / `print_session_exposure`
+  (`prompts.sh`) — the startup summary of `run` and `shell`, printed after
+  `prepare_session` so its setup messages come first. One line per aspect
+  (Project, Container with the image labels, Profile, Sandbox, Git via
+  `git_protection_summary`, Forwarding, Resources, State); tests match on its
+  `key=value` pairs, so add new facts as pairs on the fitting line.
 - `validate_mount_source` / `validate_container_path` (`mount-policy.sh`) — the
   only gate for custom mounts, the project mount (`resolve_project_dir`) and the
   git-worktree mount; extend their lists rather than special-casing in callers.
@@ -331,8 +337,11 @@ reports unknown settings, invalid values and stray lines with their line number.
   `coder` beforehand (a root-owned one would break `pnpm add` at runtime).
 - `INSTALL_DOCKER_CLI` (set by `build` from `setting.docker_socket`) controls the
   Docker CLI layer; the `pi-dockerized.docker-cli` and OCI version/revision
-  labels are what the wrapper's drift check reads. Declare volatile ARGs
-  (`WRAPPER_VERSION`, `VCS_REF`) last so they do not invalidate earlier layers.
+  labels are what the wrapper's drift check reads; `pi-dockerized.pi-version`
+  and `pi-dockerized.guard-version` (`build` and `image.yml` pass
+  `GUARD_VERSION`) feed the session summary. Declare volatile ARGs
+  (`WRAPPER_VERSION`, `VCS_REF`, `GUARD_VERSION`) last so they do not
+  invalidate earlier layers.
 - Clean apt caches in the same `RUN` layer; Docker CLI only (never the daemon).
 - No privilege escalation: no `sudo` binary/sudoers; run as non-root `coder`.
 - Baked resources (the guard, settings, AGENTS.md, mcp.json, skills/, prompts/,

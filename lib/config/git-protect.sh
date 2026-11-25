@@ -147,14 +147,20 @@ git_ro_sources() {
 # With setting.git_hardening (default on) the same holds for nested
 # repositories and for in-project gitfile/symlink targets, up to GIT_MOUNT_MAX
 # mounts; the rest are left to the guard and the post-session check.
-# Appends to VOLUME_ARGS. Usage: build_git_readonly_args <project_dir> <container_dir>
+# Appends to VOLUME_ARGS; sets GIT_RO_MOUNTS / GIT_RO_SKIPPED for the session
+# summary. Usage: build_git_readonly_args <project_dir> <container_dir>
+GIT_RO_MOUNTS=0
+GIT_RO_SKIPPED=0
 build_git_readonly_args() {
     local project_dir="$1" container_dir="$2" entry
+    GIT_RO_MOUNTS=0
+    GIT_RO_SKIPPED=0
     [ "${GIT_READONLY:-true}" = true ] || return 0
     if [ "${GIT_HARDENING:-true}" != true ]; then
         for entry in .git .gitmodules; do
             [ -e "$project_dir/$entry" ] && [ ! -L "$project_dir/$entry" ] || continue
             VOLUME_ARGS+=(--mount "type=bind,source=$project_dir/$entry,target=$container_dir/$entry,readonly")
+            GIT_RO_MOUNTS=$((GIT_RO_MOUNTS + 1))
         done
         return 0
     fi
@@ -190,6 +196,8 @@ build_git_readonly_args() {
         fi
         done_rels+=("$rel")
     done
+    GIT_RO_MOUNTS=${#done_rels[@]}
+    GIT_RO_SKIPPED=$skipped
     if [ "$skipped" -gt 0 ]; then
         config_warning "Git metadata: $skipped entries could not be mounted read-only (limit $GIT_MOUNT_MAX, or a name with both ',' and ':'); they stay writable in the container, guarded by pattern and reported when the session ends"
     fi
@@ -296,4 +304,24 @@ git_watch_report() {
         -o -path '*/.git/modules/*/config' -o \( -name .git ! -type d \) -o -name .gitmodules \) \
         -print0 2>/dev/null)
     git_watch_stop
+}
+
+# ============================================
+# SESSION SUMMARY
+# ============================================
+
+# How this session protects git metadata, for the startup summary. Reads the
+# state left by build_git_readonly_args / build_git_worktree_args; the
+# post-session check runs with git_hardening (see git_watch_start).
+# Usage: git_protection_summary <project_dir>
+git_protection_summary() {
+    local repo=no summary
+    [ -e "$1/.git" ] && repo=yes
+    summary="repo=$repo read-only=$(_onoff "${GIT_READONLY:-true}") hardening=$(_onoff "${GIT_HARDENING:-true}")"
+    if [ "${GIT_READONLY:-true}" = true ]; then
+        summary="$summary ro-mounts=$GIT_RO_MOUNTS"
+        [ "$GIT_RO_SKIPPED" -gt 0 ] && summary="$summary writable=$GIT_RO_SKIPPED"
+    fi
+    [ "${#GIT_WORKTREE_ARGS[@]}" -gt 0 ] && summary="$summary worktree=ro"
+    printf '%s post-session-check=%s' "$summary" "$(_onoff "${GIT_HARDENING:-true}")"
 }

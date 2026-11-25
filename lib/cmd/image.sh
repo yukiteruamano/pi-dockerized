@@ -243,6 +243,7 @@ build_image() {
     local -a args=(
         --build-arg "WRAPPER_VERSION=$WRAPPER_VERSION"
         --build-arg "VCS_REF=$revision"
+        --build-arg "GUARD_VERSION=$(checkout_guard_version)"
         --build-arg "INSTALL_DOCKER_CLI=$cli"
     )
     [ -n "$pi_version" ] && args+=(--build-arg "PI_VERSION=$pi_version")

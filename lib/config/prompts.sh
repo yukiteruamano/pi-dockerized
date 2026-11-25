@@ -309,26 +309,45 @@ warn_project_secrets() {
     done <<<"$hits"
 }
 
-# One-line summary of what this session exposes, plus a warning for the
-# settings that remove a safeguard. Shown before every project session.
+# What this session exposes and how it is confined, one aspect per line, plus
+# a warning for each setting that removes a safeguard. Shown before every
+# project session, after the setup messages of prepare_session.
 # Usage: print_session_exposure
 print_session_exposure() {
-    local env_file=no
-    [ -n "$ENV_FILE" ] && env_file=yes
-    local summary
-    summary="network=$NETWORK policy=$SECURITY_POLICY ssh-agent=$(_onoff "$SSH_AGENT_SUPPORT")"
-    summary="$summary gpg-agent=$(_onoff "$GPG_AGENT_SUPPORT") docker-socket=$(_onoff "$DOCKER_SOCKET")"
-    local ext=false
-    if [ -f "$EXT_AGENT_DIR/settings.json" ] && [ "$SESSION_UNTRUSTED" != true ]; then ext=true; fi
-    summary="$summary extensions=$(_onoff "$ext")"
-    summary="$summary mounts=${#CUSTOM_MOUNTS[@]} env-file=$env_file"
-    [ -n "$PI_PROFILE" ] && summary="profile=$PI_PROFILE $summary"
-    [ "$SESSION_UNTRUSTED" = true ] && summary="untrusted $summary shared-state=off"
-    print_info "Exposure: $summary"
+    local sandbox="network=$NETWORK policy=$SECURITY_POLICY"
+    [ "$SESSION_UNTRUSTED" = true ] && sandbox="untrusted $sandbox"
+    [ -n "$ALLOWED_TOOLS" ] && sandbox="$sandbox allowed-tools=$ALLOWED_TOOLS"
+    _summary_line Profile "${PI_PROFILE:-default}"
+    _summary_line Sandbox "$sandbox"
+    [ -n "$SESSION_PROJECT" ] && _summary_line Git "$(git_protection_summary "$SESSION_PROJECT")"
+    _summary_line Forwarding "ssh-agent=$(_onoff "$SSH_AGENT_SUPPORT") gpg-agent=$(_onoff "$GPG_AGENT_SUPPORT") docker-socket=$(_onoff "$DOCKER_SOCKET")"
+    _summary_line Resources "memory=${MEMORY:-unlimited} cpus=${CPUS:-unlimited} pids=${PIDS_LIMIT:-4096} timeout=${SESSION_TIMEOUT:-none}"
+    _summary_line State "$(_state_summary)"
+
     if [ "$SECURITY_POLICY" = off ]; then
         print_warning "Security policy is 'off': only the built-in backstops are enforced."
     fi
+    if [ "${GIT_READONLY:-true}" != true ]; then
+        print_warning "Git metadata is writable (setting.git_readonly=false): hooks or config the session writes run with the host's next git command."
+    elif [ "${GIT_HARDENING:-true}" != true ]; then
+        print_warning "Git hardening is off: nested repositories stay writable and no post-session Git check runs."
+    fi
     warn_project_secrets
+}
+
+# Host state the session shares: packages, custom mounts, secrets file.
+_state_summary() {
+    local ext=false env_file=no shared=on
+    [ "$(settings_source)" = ext ] && ext=true
+    [ -n "$ENV_FILE" ] && env_file=yes
+    [ "$SESSION_UNTRUSTED" = true ] && shared=off
+    printf 'extensions=%s mounts=%s env-file=%s shared-state=%s' \
+        "$(_onoff "$ext")" "${#CUSTOM_MOUNTS[@]}" "$env_file" "$shared"
+}
+
+# Usage: _summary_line <label> <text>
+_summary_line() {
+    print_info "$(printf '%-11s %s' "$1:" "$2")"
 }
 
 _onoff() {

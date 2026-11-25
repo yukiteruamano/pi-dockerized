@@ -276,12 +276,26 @@ assert_eq "$SESSION_TIMEOUT" "" "timeout resets between parses"
 
 # --- Exposure summary ----------------------------------------------------------------------------
 out="$(print_session_exposure 2>&1)"
-assert_contains "$out" "network=host policy=balanced" "exposure line shows network and policy"
-assert_contains "$out" "docker-socket=off" "exposure line shows the docker socket"
+assert_contains "$out" "Sandbox:    network=host policy=balanced" "exposure shows network and policy"
+assert_contains "$out" "docker-socket=off" "exposure shows the docker socket"
+assert_contains "$out" "Resources:  memory=unlimited cpus=unlimited pids=4096 timeout=none" "exposure shows the resource limits"
+assert_not_contains "$out" "Git:" "no Git line without a project"
 SECURITY_POLICY=off
 out="$(print_session_exposure 2>&1)"
 assert_contains "$out" "is 'off'" "policy off must be called out"
 SECURITY_POLICY=balanced
+SESSION_PROJECT="$PROJECT"
+GIT_RO_MOUNTS=0 GIT_RO_SKIPPED=0
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "Git:        repo=no read-only=on hardening=on" "exposure shows the Git protection"
+GIT_READONLY=false
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "setting.git_readonly=false" "a writable .git must be called out"
+GIT_READONLY=true GIT_HARDENING=false
+out="$(print_session_exposure 2>&1)"
+assert_contains "$out" "Git hardening is off" "git_hardening off must be called out"
+GIT_HARDENING=true
+SESSION_PROJECT=""
 
 # --- Host allow file -------------------------------------------------------------------------------
 printf '[]\n' >"$AGENT/allow.json"
@@ -335,6 +349,8 @@ image)
         *org.opencontainers.image.version*ghcr.io*) echo "${FAKE_PULLED_VERSION:-${FAKE_IMAGE_VERSION:-}}" ;;
         *org.opencontainers.image.version*) echo "${FAKE_IMAGE_VERSION:-}" ;;
         *pi-dockerized.docker-cli*) echo "${FAKE_DOCKER_CLI:-}" ;;
+        *pi-dockerized.pi-version*) echo "${FAKE_PI_VERSION:-}" ;;
+        *pi-dockerized.guard-version*) echo "${FAKE_GUARD_LABEL:-}" ;;
         esac
     elif [ "$2" = ls ]; then
         printf '%s\n' pi-dockerized:latest pi-dockerized:previous 'pi-dockerized:<none>'
@@ -349,8 +365,17 @@ bin() { PATH="$FAKE_BIN:$PATH" "$BIN" "$@"; }
 init_config_file >/dev/null # start the command tests from a pristine config
 
 # run: flags, labels, exposure, DRY_RUN.
-out="$(DRY_RUN=true bin run --untrusted --network bridge "$PROJECT" 2>&1)" || fail "untrusted dry-run must work"
-assert_contains "$out" "Exposure: untrusted network=bridge policy=strict" "run prints the exposure summary"
+out="$(FAKE_IMAGE_VERSION=9.9.9 FAKE_PI_VERSION=v1.6.0 FAKE_GUARD_LABEL=10 \
+    DRY_RUN=true bin run --untrusted --network bridge "$PROJECT" 2>&1)" || fail "untrusted dry-run must work"
+assert_contains "$out" "Sandbox:    untrusted network=bridge policy=strict" "run prints the exposure summary"
+assert_contains "$out" "(image 9.9.9, Pi 1.6.0, guard 10)" "run shows the image, Pi and guard versions"
+assert_contains "$out" "shared-state=off" "--untrusted shares no host state"
+case "$out" in
+*"Starting Pi in Docker..."*"Project:"*"Git:"*) ;;
+*) fail "the start message must come first and the summary after it (got: $out)" ;;
+esac
+plain="$(FAKE_GUARD_LABEL=unknown DRY_RUN=true bin run "$PROJECT" 2>&1)" || fail "dry-run must work"
+assert_not_contains "$plain" "guard unknown" "an unbuilt guard label is left out"
 assert_contains "$out" "PI_DOCKERIZED_POLICY=strict" "untrusted forces the strict policy"
 assert_contains "$out" "pi-dockerized.project=$PROJECT" "sessions carry the project label"
 DRY_RUN=true bin run --untrusted --policy off "$PROJECT" >/dev/null 2>&1 && fail "contradictory flags must fail"

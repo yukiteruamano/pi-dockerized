@@ -162,6 +162,29 @@ _session_abort() {
     exit 130
 }
 
+# Where the session runs and with which image (labels of the local image; a
+# label the image lacks, or an odd value, is left out).
+# Usage: print_session_header <container_name>
+print_session_header() {
+    local image="" version pi guard
+    version=$(_image_label_value org.opencontainers.image.version)
+    pi=$(_image_label_value pi-dockerized.pi-version)
+    guard=$(_image_label_value pi-dockerized.guard-version)
+    [ -n "$version" ] && image="image $version"
+    [ -n "$pi" ] && image="${image:+$image, }Pi ${pi#v}"
+    [[ "$guard" =~ ^[0-9]+$ ]] && image="${image:+$image, }guard $guard"
+    _summary_line Project "$SESSION_PROJECT"
+    _summary_line Container "$1${image:+ ($image)}"
+}
+
+# Usage: _image_label_value <label> (prints a version-like value or nothing)
+_image_label_value() {
+    local value
+    value=$(image_label "$IMAGE_NAME" "$1")
+    [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] && printf '%s' "$value"
+    return 0
+}
+
 # Run DOCKER_CMD (or print it with DRY_RUN=true) and return its exit code.
 # Usage: launch_session
 launch_session() {
@@ -221,6 +244,7 @@ run_pi() {
     set -- "${SESSION_REST[@]}"
     local project_dir="${1:-${SESSION_DIR:-$(pwd)}}"
 
+    print_info "Starting Pi in Docker..."
     prepare_session "$project_dir" config
     project_dir="$SESSION_PROJECT"
 
@@ -228,9 +252,7 @@ run_pi() {
     local container_name
     container_name="pi-$(sanitize_container_name "$(basename "$project_dir")")-$(generate_random_suffix)"
 
-    print_info "Starting Pi in Docker..."
-    print_info "Project directory: $project_dir"
-    print_info "Container name: $container_name"
+    print_session_header "$container_name"
     print_session_exposure
 
     local -a pi_args=()
@@ -338,7 +360,9 @@ run_shell() {
     set -- "${SESSION_REST[@]}"
     local project_dir="${1:-${SESSION_DIR:-$(pwd)}}"
 
+    print_info "Opening a shell in the sandbox..."
     prepare_session "$project_dir" config
+    print_session_header "pi-shell-$$"
     print_session_exposure
     build_session_cmd "pi-shell-$$" yes bash
     launch_session
