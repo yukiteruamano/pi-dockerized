@@ -5,6 +5,38 @@ Notable changes per release. The wrapper version is `WRAPPER_VERSION` in
 `extensions/pi-security-guard/policy.mjs` (shown by `pi-dockerized version`).
 Maintainers tag releases (`vX.Y.Z`); tags trigger the image workflow.
 
+## 0.18.0 — guard 10
+
+### Image
+
+- Pi 1.6.0 (from 1.5.2). The find tool's path patterns are now relative to
+  the search directory and may start with `./`; the guard already refused
+  secret targets in those forms (`./.env`, `**/id_ed25519`), now covered by
+  tests. The `render()` change for extension components does not affect the
+  guard, which draws no UI.
+- pnpm 12.23.0, qmd 2.9.0, nvm v0.41.0, uv 0.13.9, yt-dlp 2026.11.23 and a
+  fresh `debian:trixie-slim` digest. The nvm and uv installer checksums are
+  repinned after review (nvm: atomic downloads and profile fixes; uv: only its
+  version and binary checksums changed). uv 0.13.10 is left out until it has
+  aged past the release-age window.
+- New image labels `pi-dockerized.pi-version` and
+  `pi-dockerized.guard-version` (`GUARD_VERSION` build arg, set by `build`
+  and the image workflow).
+
+### Wrapper
+
+- The startup summary of `run` and `shell` replaces the single `Exposure:`
+  line with one line per aspect: Project, Container (with image, Pi and guard
+  versions), Profile, Sandbox (network, policy, `allowed_tools`, untrusted),
+  **Git** (`git_readonly`, `git_hardening`, read-only Git mounts, entries
+  left writable, worktree, post-session check), Forwarding, Resources
+  (memory, CPUs, PIDs, `--timeout`) and State (Pi Packages, custom mounts,
+  secrets file, shared state).
+- `setting.git_readonly=false` and `setting.git_hardening=false` are called
+  out with a warning, like `policy=off`.
+- "Starting Pi in Docker..." is printed first, so setup messages (GnuPG
+  agent, Pi Packages) no longer appear before it.
+
 ## 0.17.1 — guard 10
 
 ### Build
